@@ -295,7 +295,7 @@ if nav == "Dashboard":
             if not exits.empty:
                 wins = len(exits[exits['Value'] > 0])
                 losses = len(exits[exits['Value'] <= 0])
-                fig_pie = px.donut(values=[wins, losses], names=['Wins', 'Losses'], color_discrete_sequence=['#66fcf1', '#ff6b6b'], hole=0.6)
+                fig_pie = px.pie(values=[wins, losses], names=['Wins', 'Losses'], color_discrete_sequence=['#66fcf1', '#ff6b6b'], hole=0.6)
                 fig_pie.update_layout(template="plotly_dark", height=350, showlegend=True, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
                 st.plotly_chart(fig_pie, use_container_width=True)
 
@@ -316,14 +316,27 @@ elif nav == "Strategy Lab":
             # Capital & Risk
             st.markdown("### Risk Management")
             initial_cap = st.number_input("Capital", value=10000)
-            multiplier = st.number_input("Multiplier", value=5.0) if "Gold" in asset_class else st.number_input("Multiplier", value=10.0 if "Nasdaq" in asset_class else 1.0)
             
-            mode = st.selectbox("Sizing", ["Fixed Contracts", "Leverage"])
-            fixed_size, leverage = 1, 1.0
+            # Asset Defaults
+            def_mult = 1.0
+            def_lev = 1.0
+            if "Gold" in asset_class: 
+                def_mult = 5.0
+                def_lev = 10.0
+            elif "Nasdaq" in asset_class:
+                def_mult = 10.0
+                def_lev = 10.0
+                
+            multiplier = st.number_input("Multiplier", value=def_mult, help="Value of 1 point movement per contract.")
+            leverage = st.number_input("Leverage", 1.0, 100.0, def_lev, help="10x means 10% margin required.")
+            
+            mode = st.selectbox("Sizing", ["Fixed Contracts", "Use Full Margin"])
+            fixed_size = 0
+            
             if mode == "Fixed Contracts":
                 fixed_size = st.number_input("Contracts", 1, 100, 1)
             else:
-                leverage = st.number_input("Leverage", 1.0, 100.0, 10.0)
+                st.caption("Strategy will use 100% of capital * leverage for each trade.")
                 
             pyramiding = st.number_input("Max Pyramiding", 1, 5, 1)
             
