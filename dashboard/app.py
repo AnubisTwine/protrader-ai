@@ -306,11 +306,45 @@ elif nav == "Strategy Lab":
     col_input, col_run = st.columns([1, 4])
     
     with col_input:
+        st.markdown("### Configuration")
+        
+        # --- Date Configuration ---
+        if 'bt_start' not in st.session_state:
+            st.session_state.bt_start = datetime.date.today() - datetime.timedelta(days=365)
+        if 'bt_end' not in st.session_state:
+            st.session_state.bt_end = datetime.date.today()
+            
+        def apply_date_preset():
+            p = st.session_state.period_preset
+            today = datetime.date.today()
+            if p == "1 Month": 
+                st.session_state.bt_start = today - datetime.timedelta(days=30)
+            elif p == "3 Months":
+                st.session_state.bt_start = today - datetime.timedelta(days=90)
+            elif p == "6 Months": 
+                st.session_state.bt_start = today - datetime.timedelta(days=180)
+            elif p == "12 Months": 
+                st.session_state.bt_start = today - datetime.timedelta(days=365)
+            st.session_state.bt_end = today
+
+        def set_custom_date():
+            st.session_state.period_preset = "Custom"
+
+        st.selectbox(
+            "Quick Range", 
+            ["Custom", "1 Month", "3 Months", "6 Months", "12 Months"], 
+            index=4, 
+            key="period_preset", 
+            on_change=apply_date_preset
+        )
+        
+        c_d1, c_d2 = st.columns(2)
+        with c_d1:
+            start_date = st.date_input("Start", key="bt_start", format="DD/MM/YYYY", on_change=set_custom_date)
+        with c_d2:
+            end_date = st.date_input("End", key="bt_end", format="DD/MM/YYYY", on_change=set_custom_date)
+
         with st.form("backtest_config"):
-            st.markdown("### Configuration")
-            # Dates
-            start_date = st.date_input("Start", value=datetime.date.today() - datetime.timedelta(days=365))
-            end_date = st.date_input("End", value=datetime.date.today())
             interval = st.selectbox("Timeframe", ["1d", "1h", "15m", "5m"])
             
             # Capital & Risk
