@@ -20,16 +20,22 @@ import src.simple_strategy
 import src.rsi_bollinger_strategy
 import src.engine
 import src.indicators
+import src.macd_strategy
+import src.builder_strategy
 
 importlib.reload(src.data_loader)
 importlib.reload(src.simple_strategy)
 importlib.reload(src.rsi_bollinger_strategy)
 importlib.reload(src.engine)
 importlib.reload(src.indicators)
+importlib.reload(src.macd_strategy)
+importlib.reload(src.builder_strategy)
 
 from src.data_loader import DataLoader
 from src.simple_strategy import SmaCrossStrategy
 from src.rsi_bollinger_strategy import RsiBollingerStrategy
+from src.macd_strategy import MacdStrategy
+from src.builder_strategy import BuilderStrategy
 from src.engine import BacktestEngine
 
 # --- CUSTOM CSS ---
@@ -151,7 +157,7 @@ elif "Bitcoin" in asset_class: ticker = "BTC-USD"
 st.sidebar.markdown("---")
 
 # --- HELPER FUNCTIONS ---
-TIMEFRAMES = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
+TIMEFRAMES = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1d", "5d", "1wk", "1mo", "3mo"]
 
 def get_kpi_card(title, value, is_positive=True, prefix="", suffix=""):
     color_class = "metric-positive" if is_positive else "metric-negative"
@@ -167,8 +173,12 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
         # Load Data
         fetch_start = start_date
         # Auto-adjust logic for intraday
-        if interval in ['5m', '15m', '30m', '60m', '1h']:
-             limit = 59 if 'm' in interval else 729
+        if interval in ['5m', '15m', '30m', '60m', '90m', '1h']:
+             if interval in ['60m', '90m', '1h']:
+                 limit = 729
+             else:
+                 limit = 59
+             
              min_date = datetime.date.today() - datetime.timedelta(days=limit)
              if fetch_start < min_date: fetch_start = min_date
 
@@ -180,8 +190,14 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
         # Init Strategy
         if strategy_type == "SMA Crossover":
             strategy = SmaCrossStrategy(data, short_window=params['short'], long_window=params['long'])
-        else:
+        elif strategy_type == "RSI + Bollinger":
             strategy = RsiBollingerStrategy(data, rsi_period=params['rsi_p'], rsi_lower=params['rsi_l'], rsi_upper=params['rsi_u'], bb_period=params['bb_p'], bb_std=params['bb_s'])
+        elif strategy_type == "MACD":
+            strategy = MacdStrategy(data, fast_period=params['fast'], slow_period=params['slow'], signal_period=params['signal'])
+        elif strategy_type == "Custom Builder":
+            strategy = BuilderStrategy(data, entry_rules=params['entry_rules'], exit_rules=params['exit_rules'])
+        else:
+            return None, "Unknown Strategy"
         
         # Run Engine
         engine = BacktestEngine(initial_capital=initial_capital)
@@ -355,6 +371,10 @@ elif nav == "Strategy Lab":
         with c_d2:
             end_date = st.date_input("End", key="bt_end", format="DD/MM/YYYY", on_change=set_custom_date)
 
+        # Strategy Selection (Outside Form for interactivity)
+        st.markdown("### Strategy Logic")
+        strat = st.selectbox("Model", ["SMA Crossover", "RSI + Bollinger", "MACD", "Custom Builder"])
+
         with st.form("backtest_config"):
             interval = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("1d") if "1d" in TIMEFRAMES else 0)
             
@@ -382,25 +402,129 @@ elif nav == "Strategy Lab":
                 fixed_size = st.number_input("Contracts", 1, 100, 1)
             else:
                 st.caption("Strategy will use 100% of capital * leverage for each trade.")
-                
-            pyramiding = st.number_input("Max Pyramiding", 1, 5, 1)
             
-            # Strategy
-            st.markdown("### Strategy Logic")
-            strat = st.selectbox("Model", ["SMA Crossover", "RSI + Bollinger"])
+            pyramiding = st.number_input("Max Pyramiding", 1, 10, 1, help="Max open trades allowed at once.")
+
+            # Strategy Params
             params = {}
             if strat == "SMA Crossover":
                 params['short'] = st.number_input("Short Window", 5, 50, 20)
                 params['long'] = st.number_input("Long Window", 20, 200, 50)
-            else:
+            elif strat == "RSI + Bollinger":
                 params['rsi_p'] = st.number_input("RSI Per", 5, 30, 14)
                 params['rsi_l'] = st.number_input("RSI Low", 10, 40, 30)
                 params['rsi_u'] = st.number_input("RSI High", 60, 90, 70)
                 params['bb_p'] = st.number_input("BB Per", 10, 50, 20)
                 params['bb_s'] = st.number_input("BB Std", 1.0, 3.0, 2.0)
+            elif strat == "MACD":
+                params['fast'] = st.number_input("Fast Period", 2, 20, 12)
+                params['slow'] = st.number_input("Slow Period", 10, 50, 26)
+                params['signal'] = st.number_input("Signal Period", 2, 20, 9)
+            elif strat == "Custom Builder":
+                st.info("Define your entry and exit rules below.")
+                # We can't put dynamic form elements nicely inside a st.form if they needed add/remove logic 
+                # that triggers reruns, but let's try a simple set of fixed slots or just assume
+                # the user configures them OUTSIDE the form. 
+                # Wait, st.form submit button freezes the state. 
+                # We should move the builder configuration OUTSIDE this form or use session state 
+                # that is updated by other widgets.
+                
+                # For now, let's grab from session state if available
+                if 'builder_entry_rules' not in st.session_state: st.session_state.builder_entry_rules = []
+                if 'builder_exit_rules' not in st.session_state: st.session_state.builder_exit_rules = []
+                
+                params['entry_rules'] = st.session_state.builder_entry_rules
+                params['exit_rules'] = st.session_state.builder_exit_rules
+                
+                st.markdown(f"**Entry Rules:** {len(params['entry_rules'])}")
+                st.markdown(f"**Exit Rules:** {len(params['exit_rules'])}")
+                st.caption("Configure rules in the 'Strategy Builder' panel (below or new tab).")
+
                 
             run_btn = st.form_submit_button("RUN BACKTEST")
             
+    # --- BUILDER UI (If Custom Selected) ---
+    if strat == "Custom Builder":
+        with col_run:
+             st.markdown("### 🛠️ Custom Strategy Builder")
+             
+             b_col1, b_col2 = st.columns(2)
+             
+             # Helper to render rule creator
+             def render_rule_creator(key_prefix, target_list_key):
+                 with st.container():
+                     # Standard Indicator List
+                     IND_LIST_1 = ["Close", "RSI", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
+                     IND_LIST_2 = ["Value", "Close", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
+                     
+                     c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
+                     with c1:
+                         ind1 = st.selectbox("Indicator 1", IND_LIST_1, key=f"{key_prefix}_i1")
+                         p1 = {}
+                         if ind1 in ["RSI", "SMA", "EMA"]:
+                            p1['period'] = st.number_input("Period", 2, 200, 14, key=f"{key_prefix}_p1", label_visibility="collapsed")
+                         elif "MACD" in ind1: # Allow configuring MACD params for custom rules? Or assume standard 12,26,9?
+                            # For simplicity in UI, maybe default? Or add collapsed inputs?
+                            # Let's keep it simple: Standard MACD (12,26,9) used for these tokens.
+                            # Or we can add them.
+                            # Let's trust defaults for now to save UI space.
+                            pass
+                     with c2:
+                         op = st.selectbox("Op", [">", "<", "Crosses Above", "Crosses Below"], key=f"{key_prefix}_op")
+                     with c3:
+                         ind2 = st.selectbox("Indicator 2 / Value", IND_LIST_2, key=f"{key_prefix}_i2")
+                         p2 = {}
+                         if ind2 == "Value":
+                             p2['value'] = st.number_input("Value", 0.0, 50000.0, 50.0, key=f"{key_prefix}_v2", label_visibility="collapsed")
+                         elif ind2 in ["SMA", "EMA"]:
+                             p2['period'] = st.number_input("Period", 2, 200, 50, key=f"{key_prefix}_p2", label_visibility="collapsed")
+                     with c4:
+                         if st.button("Add", key=f"{key_prefix}_add"):
+                             rule = {
+                                 'ind1': ind1, 'params1': p1,
+                                 'op': op,
+                                 'ind2': ind2, 'params2': p2
+                             }
+                             st.session_state[target_list_key].append(rule)
+                             st.rerun()
+
+             # Entry Rules Section
+             with b_col1:
+                 st.markdown("#### Entry Rules (Long)")
+                 # List existing
+                 for i, rule in enumerate(st.session_state.builder_entry_rules):
+                     p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
+                     p2_val = rule['params2'].get('value', '')
+                     p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
+                     
+                     st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
+                     if st.button(f"🗑️", key=f"del_entry_{i}"):
+                         st.session_state.builder_entry_rules.pop(i)
+                         st.rerun()
+
+                 st.markdown("---")
+                 st.markdown("**Add New Entry Rule**")
+                 render_rule_creator("entry", "builder_entry_rules")
+
+             # Exit Rules Section
+             with b_col2:
+                 st.markdown("#### Exit Rules (Long)")
+                 for i, rule in enumerate(st.session_state.builder_exit_rules):
+                     p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
+                     p2_val = rule['params2'].get('value', '')
+                     p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
+                     
+                     st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
+                     if st.button(f"🗑️", key=f"del_exit_{i}"):
+                         st.session_state.builder_exit_rules.pop(i)
+                         st.rerun()
+                         
+                 st.markdown("---")
+                 st.markdown("**Add New Exit Rule**")
+                 render_rule_creator("exit", "builder_exit_rules")
+                 
+             st.markdown("---")
+             
     with col_run:
         if run_btn:
             # 1. Determine relevant timeframes (Selected + All Below)

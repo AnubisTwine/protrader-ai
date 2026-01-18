@@ -30,3 +30,15 @@ class Indicators:
         upper = sma + (std * std_dev)
         lower = sma - (std * std_dev)
         return upper, lower
+
+    @staticmethod
+    def macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
+        """Moving Average Convergence Divergence"""
+        exp1 = series.ewm(span=fast, adjust=False).mean()
+        exp2 = series.ewm(span=slow, adjust=False).mean()
+        macd = exp1 - exp2
+        sig = macd.ewm(span=signal, adjust=False).mean()
+        hist = macd - sig
+        return macd, sig, hist
+        lower = sma - (std * std_dev)
+        return upper, lower
