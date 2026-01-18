@@ -59,9 +59,33 @@ class BuilderStrategy(Strategy):
         return pd.Series(0, index=df.index)
 
     def _evaluate_rule(self, df: pd.DataFrame, rule: dict) -> pd.Series:
+        # Get series and ensure we name/store them for visualization if they are indicators
         s1 = self._get_indicator_series(df, rule['ind1'], rule['params1'])
         s2 = self._get_indicator_series(df, rule['ind2'], rule['params2'])
         
+        # Helper to generate a unique readable name
+        def get_name(ind, p):
+             if ind == 'Value': return None # Don't plot constants usually
+             if ind in ['Close', 'Open', 'High', 'Low', 'Volume']: return None
+             
+             # Format: RSI_14, SMA_50, MACD_12_26_9
+             if ind in ['RSI', 'SMA', 'EMA']:
+                 return f"{ind}_{p.get('period')}"
+             if 'MACD' in ind:
+                 return f"{ind}" # Simplified, usually standard
+             if 'BOLLINGER' in ind:
+                 return f"BB_{p.get('period')}_{p.get('band')}"
+             return ind
+
+        name1 = get_name(rule['ind1'], rule['params1'])
+        name2 = get_name(rule['ind2'], rule['params2'])
+        
+        # Save to dataframe if valid name and not already there
+        if name1 and name1 not in df.columns:
+            df[name1] = s1
+        if name2 and name2 not in df.columns:
+            df[name2] = s2
+            
         op = rule['op']
         
         if op == '>':

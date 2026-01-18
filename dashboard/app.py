@@ -135,11 +135,15 @@ if 'bt_results' not in st.session_state:
     st.session_state.bt_results = None
 if 'last_ticker' not in st.session_state:
     st.session_state.last_ticker = "GC=F"
+if 'saved_strategies' not in st.session_state:
+    st.session_state.saved_strategies = {}
+if 'builder_entry_rules' not in st.session_state: st.session_state.builder_entry_rules = []
+if 'builder_exit_rules' not in st.session_state: st.session_state.builder_exit_rules = []
 
 # --- SIDEBAR NAV ---
 st.sidebar.image("https://img.icons8.com/nolan/96/bullish.png", width=60)
 st.sidebar.markdown("## ProTrader AI")
-nav = st.sidebar.radio("Navigation", ["Dashboard", "Strategy Lab", "Trade Journal", "Settings"])
+nav = st.sidebar.radio("Navigation", ["Dashboard", "Strategy Lab", "Strategy Builder", "Trade Journal", "Settings"])
 
 st.sidebar.markdown("---")
 
@@ -194,10 +198,13 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
             strategy = RsiBollingerStrategy(data, rsi_period=params['rsi_p'], rsi_lower=params['rsi_l'], rsi_upper=params['rsi_u'], bb_period=params['bb_p'], bb_std=params['bb_s'])
         elif strategy_type == "MACD":
             strategy = MacdStrategy(data, fast_period=params['fast'], slow_period=params['slow'], signal_period=params['signal'])
-        elif strategy_type == "Custom Builder":
-            strategy = BuilderStrategy(data, entry_rules=params['entry_rules'], exit_rules=params['exit_rules'])
         else:
-            return None, "Unknown Strategy"
+            # Assume any other strategy type found here with entry_rules/exit_rules is a Custom/Builder one
+            # matches "Active Builder State" or any Saved Strategy Name
+            if 'entry_rules' in params and 'exit_rules' in params:
+                 strategy = BuilderStrategy(data, entry_rules=params['entry_rules'], exit_rules=params['exit_rules'])
+            else:
+                 return None, f"Unknown Strategy: {strategy_type}"
         
         # Run Engine
         engine = BacktestEngine(initial_capital=initial_capital)
@@ -373,7 +380,19 @@ elif nav == "Strategy Lab":
 
         # Strategy Selection (Outside Form for interactivity)
         st.markdown("### Strategy Logic")
-        strat = st.selectbox("Model", ["SMA Crossover", "RSI + Bollinger", "MACD", "Custom Builder"])
+        
+        # Combine standard + saved custom strategies
+        standard_strats = ["SMA Crossover", "RSI + Bollinger", "MACD"]
+        custom_strats = list(st.session_state.saved_strategies.keys())
+        
+        # We handle "Builder" separately on its own page now, but we can allow "Unsaved Builder" or similar 
+        # provided the session state is populated.
+        # But user requested "Use them to backtest". 
+        # Let's show: Standard..., Saved Strat 1, Saved Strat 2...
+        
+        all_models = standard_strats + ["Active Builder State"] + custom_strats
+        
+        strat = st.selectbox("Model", all_models, help="Standard: Built-in strategies.\nActive Builder State: Uses the current unsaved usage in the 'Strategy Builder' page.\nSaved: Your custom named strategies.")
 
         with st.form("backtest_config"):
             interval = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("1d") if "1d" in TIMEFRAMES else 0)
@@ -420,111 +439,20 @@ elif nav == "Strategy Lab":
                 params['fast'] = st.number_input("Fast Period", 2, 20, 12)
                 params['slow'] = st.number_input("Slow Period", 10, 50, 26)
                 params['signal'] = st.number_input("Signal Period", 2, 20, 9)
-            elif strat == "Custom Builder":
-                st.info("Define your entry and exit rules below.")
-                # We can't put dynamic form elements nicely inside a st.form if they needed add/remove logic 
-                # that triggers reruns, but let's try a simple set of fixed slots or just assume
-                # the user configures them OUTSIDE the form. 
-                # Wait, st.form submit button freezes the state. 
-                # We should move the builder configuration OUTSIDE this form or use session state 
-                # that is updated by other widgets.
-                
-                # For now, let's grab from session state if available
-                if 'builder_entry_rules' not in st.session_state: st.session_state.builder_entry_rules = []
-                if 'builder_exit_rules' not in st.session_state: st.session_state.builder_exit_rules = []
-                
+            elif strat == "Active Builder State":
+                st.info("Using rules currently defined in Strategy Builder.")
                 params['entry_rules'] = st.session_state.builder_entry_rules
                 params['exit_rules'] = st.session_state.builder_exit_rules
-                
-                st.markdown(f"**Entry Rules:** {len(params['entry_rules'])}")
-                st.markdown(f"**Exit Rules:** {len(params['exit_rules'])}")
-                st.caption("Configure rules in the 'Strategy Builder' panel (below or new tab).")
-
+                st.caption(f"Entry Rules: {len(params['entry_rules'])}, Exit Rules: {len(params['exit_rules'])}")
+            elif strat in st.session_state.saved_strategies:
+                st.success(f"Loaded '{strat}'")
+                rules = st.session_state.saved_strategies[strat]
+                params['entry_rules'] = rules['entry']
+                params['exit_rules'] = rules['exit']
+                st.caption(f"Entry Rules: {len(params['entry_rules'])}, Exit Rules: {len(params['exit_rules'])}")
                 
             run_btn = st.form_submit_button("RUN BACKTEST")
             
-    # --- BUILDER UI (If Custom Selected) ---
-    if strat == "Custom Builder":
-        with col_run:
-             st.markdown("### 🛠️ Custom Strategy Builder")
-             
-             b_col1, b_col2 = st.columns(2)
-             
-             # Helper to render rule creator
-             def render_rule_creator(key_prefix, target_list_key):
-                 with st.container():
-                     # Standard Indicator List
-                     IND_LIST_1 = ["Close", "RSI", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
-                     IND_LIST_2 = ["Value", "Close", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
-                     
-                     c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
-                     with c1:
-                         ind1 = st.selectbox("Indicator 1", IND_LIST_1, key=f"{key_prefix}_i1")
-                         p1 = {}
-                         if ind1 in ["RSI", "SMA", "EMA"]:
-                            p1['period'] = st.number_input("Period", 2, 200, 14, key=f"{key_prefix}_p1", label_visibility="collapsed")
-                         elif "MACD" in ind1: # Allow configuring MACD params for custom rules? Or assume standard 12,26,9?
-                            # For simplicity in UI, maybe default? Or add collapsed inputs?
-                            # Let's keep it simple: Standard MACD (12,26,9) used for these tokens.
-                            # Or we can add them.
-                            # Let's trust defaults for now to save UI space.
-                            pass
-                     with c2:
-                         op = st.selectbox("Op", [">", "<", "Crosses Above", "Crosses Below"], key=f"{key_prefix}_op")
-                     with c3:
-                         ind2 = st.selectbox("Indicator 2 / Value", IND_LIST_2, key=f"{key_prefix}_i2")
-                         p2 = {}
-                         if ind2 == "Value":
-                             p2['value'] = st.number_input("Value", 0.0, 50000.0, 50.0, key=f"{key_prefix}_v2", label_visibility="collapsed")
-                         elif ind2 in ["SMA", "EMA"]:
-                             p2['period'] = st.number_input("Period", 2, 200, 50, key=f"{key_prefix}_p2", label_visibility="collapsed")
-                     with c4:
-                         if st.button("Add", key=f"{key_prefix}_add"):
-                             rule = {
-                                 'ind1': ind1, 'params1': p1,
-                                 'op': op,
-                                 'ind2': ind2, 'params2': p2
-                             }
-                             st.session_state[target_list_key].append(rule)
-                             st.rerun()
-
-             # Entry Rules Section
-             with b_col1:
-                 st.markdown("#### Entry Rules (Long)")
-                 # List existing
-                 for i, rule in enumerate(st.session_state.builder_entry_rules):
-                     p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
-                     p2_val = rule['params2'].get('value', '')
-                     p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
-                     
-                     st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
-                     if st.button(f"🗑️", key=f"del_entry_{i}"):
-                         st.session_state.builder_entry_rules.pop(i)
-                         st.rerun()
-
-                 st.markdown("---")
-                 st.markdown("**Add New Entry Rule**")
-                 render_rule_creator("entry", "builder_entry_rules")
-
-             # Exit Rules Section
-             with b_col2:
-                 st.markdown("#### Exit Rules (Long)")
-                 for i, rule in enumerate(st.session_state.builder_exit_rules):
-                     p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
-                     p2_val = rule['params2'].get('value', '')
-                     p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
-                     
-                     st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
-                     if st.button(f"🗑️", key=f"del_exit_{i}"):
-                         st.session_state.builder_exit_rules.pop(i)
-                         st.rerun()
-                         
-                 st.markdown("---")
-                 st.markdown("**Add New Exit Rule**")
-                 render_rule_creator("exit", "builder_exit_rules")
-                 
-             st.markdown("---")
-             
     with col_run:
         if run_btn:
             # 1. Determine relevant timeframes (Selected + All Below)
@@ -680,13 +608,12 @@ elif nav == "Strategy Lab":
                     name="Price"
                 ), row=1, col=1)
                 
-                # 2. Indicators (Optional - e.g. SMA)
-                # We could pull indicators from data if we saved them... mostly they are in 'data' if strategy calculated them?
-                # The 'data' returned by strategy.generate_signals() has indicators.
-                # Let's check columns for common indicators like 'SMA_20', 'upper', etc.
+                # 2. Indicators
+                # Automatically plot columns that look like overlays (SMA, EMA, BB)
+                overlay_indicators = ['SMA', 'EMA', 'upper', 'lower', 'basis']
                 for col in data_hist.columns:
-                    if col.startswith('SMA') or col in ['upper', 'lower', 'basis']:
-                        fig.add_trace(go.Scatter(x=data_hist.index, y=data_hist[col], name=col,
+                    if any(x in col for x in overlay_indicators):
+                         fig.add_trace(go.Scatter(x=data_hist.index, y=data_hist[col], name=col,
                                                  line=dict(width=1), opacity=0.7), row=1, col=1)
                 
                 # 3. Trade Markers
@@ -793,6 +720,106 @@ elif nav == "Strategy Lab":
                     <h3>Ready to Initialize Simulation</h3>
                  </div>
                  """, unsafe_allow_html=True)
+
+# --- VIEW: STRATEGY BUILDER ---
+elif nav == "Strategy Builder":
+    st.markdown("# 🛠️ Custom Strategy Builder")
+    
+    st.markdown("Build your strategy by adding rules below. Once configured, **save** it to use in the Strategy Lab.")
+    
+    # --- SAVE STRATEGY SECTION ---
+    with st.expander("💾 Save Strategy config", expanded=True):
+        col_s1, col_s2 = st.columns([3, 1])
+        with col_s1:
+            strat_name_input = st.text_input("Strategy Name", placeholder="My New Strategy")
+        with col_s2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Save Strategy", use_container_width=True):
+                if strat_name_input:
+                    # Save current entry/exit rules to session state
+                    st.session_state.saved_strategies[strat_name_input] = {
+                        'entry': st.session_state.builder_entry_rules.copy(),
+                        'exit': st.session_state.builder_exit_rules.copy()
+                    }
+                    st.success(f"Strategy '{strat_name_input}' saved successfully!")
+                else:
+                    st.error("Please enter a strategy name.")
+
+    # --- BUILDER UI ---
+    b_col1, b_col2 = st.columns(2)
+             
+    # Helper to render rule creator
+    def render_rule_creator(key_prefix, target_list_key):
+         with st.container():
+             # Standard Indicator List
+             IND_LIST_1 = ["Close", "RSI", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
+             IND_LIST_2 = ["Value", "Close", "SMA", "EMA", "MACD LINE", "MACD SIGNAL", "MACD HIST"]
+             
+             c1, c2, c3, c4 = st.columns([2, 1, 2, 1])
+             with c1:
+                 ind1 = st.selectbox("Indicator 1", IND_LIST_1, key=f"{key_prefix}_i1")
+                 p1 = {}
+                 if ind1 in ["RSI", "SMA", "EMA"]:
+                    p1['period'] = st.number_input("Period", 2, 200, 14, key=f"{key_prefix}_p1", label_visibility="collapsed")
+                 elif "MACD" in ind1: 
+                    pass
+             with c2:
+                 op = st.selectbox("Op", [">", "<", "Crosses Above", "Crosses Below"], key=f"{key_prefix}_op")
+             with c3:
+                 ind2 = st.selectbox("Indicator 2 / Value", IND_LIST_2, key=f"{key_prefix}_i2")
+                 p2 = {}
+                 if ind2 == "Value":
+                     p2['value'] = st.number_input("Value", 0.0, 50000.0, 50.0, key=f"{key_prefix}_v2", label_visibility="collapsed")
+                 elif ind2 in ["SMA", "EMA"]:
+                     p2['period'] = st.number_input("Period", 2, 200, 50, key=f"{key_prefix}_p2", label_visibility="collapsed")
+             with c4:
+                 if st.button("Add", key=f"{key_prefix}_add"):
+                     rule = {
+                         'ind1': ind1, 'params1': p1,
+                         'op': op,
+                         'ind2': ind2, 'params2': p2
+                     }
+                     st.session_state[target_list_key].append(rule)
+                     st.rerun()
+
+    # Entry Rules Section
+    with b_col1:
+         st.markdown("#### Entry Rules (Long)")
+         # List existing
+         for i, rule in enumerate(st.session_state.builder_entry_rules):
+             p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
+             p2_val = rule['params2'].get('value', '')
+             p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
+             
+             st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
+             if st.button(f"🗑️", key=f"del_entry_{i}"):
+                 st.session_state.builder_entry_rules.pop(i)
+                 st.rerun()
+
+         st.markdown("---")
+         st.markdown("**Add New Entry Rule**")
+         render_rule_creator("entry", "builder_entry_rules")
+
+    # Exit Rules Section
+    with b_col2:
+         st.markdown("#### Exit Rules (Long)")
+         for i, rule in enumerate(st.session_state.builder_exit_rules):
+             p1_s = f"({rule['params1'].get('period','')})" if 'period' in rule['params1'] else ""
+             p2_val = rule['params2'].get('value', '')
+             p2_s = f"({rule['params2'].get('period','')})" if 'period' in rule['params2'] else f" {p2_val}"
+             
+             st.text(f"{i+1}. {rule['ind1']}{p1_s} {rule['op']} {rule['ind2']}{p2_s}")
+             if st.button(f"🗑️", key=f"del_exit_{i}"):
+                 st.session_state.builder_exit_rules.pop(i)
+                 st.rerun()
+                 
+         st.markdown("---")
+         st.markdown("**Add New Exit Rule**")
+         render_rule_creator("exit", "builder_exit_rules")
+    
+    st.markdown("---")
+
+
 
 # --- VIEW: JOURNAL ---
 elif nav == "Trade Journal":
