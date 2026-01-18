@@ -277,6 +277,7 @@ class BacktestEngine:
             sharpe_ratio = 0
 
         return {
+            'initial_capital': self.initial_capital,
             'final_capital': self.capital,
             'return_pct': ((self.capital - self.initial_capital) / self.initial_capital) * 100,
             'max_drawdown': max_drawdown,

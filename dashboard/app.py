@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+from plotly.subplots import make_subplots
 import sys
 import os
 import importlib
@@ -150,6 +151,8 @@ elif "Bitcoin" in asset_class: ticker = "BTC-USD"
 st.sidebar.markdown("---")
 
 # --- HELPER FUNCTIONS ---
+TIMEFRAMES = ["1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo"]
+
 def get_kpi_card(title, value, is_positive=True, prefix="", suffix=""):
     color_class = "metric-positive" if is_positive else "metric-negative"
     return f"""
@@ -213,6 +216,9 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
             'avg_trade': avg_trade,
             'total_trades': total_trades_count
         }
+        
+        # Add history for visualization
+        results['history'] = data
         
         return results, None
         
@@ -305,6 +311,7 @@ elif nav == "Strategy Lab":
     
     col_input, col_run = st.columns([1, 4])
     
+
     with col_input:
         st.markdown("### Configuration")
         
@@ -313,7 +320,11 @@ elif nav == "Strategy Lab":
             st.session_state.bt_start = datetime.date.today() - datetime.timedelta(days=365)
         if 'bt_end' not in st.session_state:
             st.session_state.bt_end = datetime.date.today()
-            
+        
+        # Store multi-timeframe results
+        if 'multi_tf_results' not in st.session_state:
+            st.session_state.multi_tf_results = {}
+
         def apply_date_preset():
             p = st.session_state.period_preset
             today = datetime.date.today()
@@ -345,7 +356,7 @@ elif nav == "Strategy Lab":
             end_date = st.date_input("End", key="bt_end", format="DD/MM/YYYY", on_change=set_custom_date)
 
         with st.form("backtest_config"):
-            interval = st.selectbox("Timeframe", ["1d", "1h", "15m", "5m"])
+            interval = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("1d") if "1d" in TIMEFRAMES else 0)
             
             # Capital & Risk
             st.markdown("### Risk Management")
@@ -392,36 +403,267 @@ elif nav == "Strategy Lab":
             
     with col_run:
         if run_btn:
-            with st.spinner(f"Simulating {strat} on {ticker}..."):
-                res, err = run_backtest_logic(start_date, end_date, interval, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding)
+            # 1. Determine relevant timeframes (Selected + All Below)
+            try:
+                main_tf_index = TIMEFRAMES.index(interval)
+                # Get all timeframes up to and including the selected one, reversed so main is first? 
+                # Or user wants "below". Below usually means "lower timeframe" (shorter duration).
+                # Our list is sorted smallest to largest (mostly).
+                # "1m", "2m", ... "1d", ...
+                # If "1d" is selected, we want "1d" and everything before it.
+                # However, restrict "1m" and "2m" if range is too large to avoid freezing/errors?
+                # For now, let's just take them all.
+                
+                # We want the main one first for immediate display.
+                # Then the rest in descending order (largest to smallest) or just list them.
+                
+                # Let's get the list of timeframes to test:
+                test_timeframes = [interval] + [tf for tf in TIMEFRAMES[:main_tf_index] if tf != interval]
+                # Reverse the lower ones so we go from close-to-main down to 1m
+                test_timeframes = [interval] + sorted(TIMEFRAMES[:main_tf_index], key=lambda x: TIMEFRAMES.index(x), reverse=True)
+                
+            except ValueError:
+                test_timeframes = [interval]
+
+            st.session_state.multi_tf_results = {} # Reset
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i, tf in enumerate(test_timeframes):
+                status_text.text(f"Simulating {strat} on {tf} ({i+1}/{len(test_timeframes)})...")
+                
+                # Adjust start date for lower timeframes if needed to prevent yfinance errors?
+                # yfinance handles it gracefully usually, or returns empty.
+                # But to save time, maybe cap history for < 15m?
+                # User simply asked to test. Let's let logic handle it.
+                
+                res, err = run_backtest_logic(start_date, end_date, tf, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding)
                 
                 if res:
-                    st.session_state.bt_results = res
-                    st.success("Backtest Complete! Check the Dashboard for insights.")
-                    
-                    # Immediate Feedback
-                    m = res['metrics']
-                    row1 = st.columns(4)
-                    row1[0].metric("PnL", f"${res['final_capital'] - initial_cap:.2f}")
-                    row1[1].metric("Win Rate", f"{m['win_rate']:.1f}%")
-                    row1[2].metric("Sharpe", f"{res['sharpe_ratio']:.2f}")
-                    row1[3].metric("Trades", m['total_trades'])
-                    
-                    st.markdown("### 🔍 Price Action Analysis")
-                    # Visualizing the trade entries
-                    trades = res['trades']
-                    fig = go.Figure()
-                    
-                    st.line_chart(res['equity_curve']['Equity'])
-
+                    st.session_state.multi_tf_results[tf] = res
                 else:
-                    st.error(err)
-        else:
-            if st.session_state.bt_results:
-                 st.info("Last Run Results Available")
-                 res = st.session_state.bt_results
-                 st.dataframe(res['trades'].tail())
+                    # If it fails (e.g. no data for 1h in 1990), we just skip
+                    pass
+                
+                progress_bar.progress((i + 1) / len(test_timeframes))
+                
+            status_text.empty()
+            progress_bar.empty()
+            
+            # Set the main one as the current active result
+            if interval in st.session_state.multi_tf_results:
+                st.session_state.bt_results = st.session_state.multi_tf_results[interval]
+                st.success(f"Multi-Timeframe Analysis Complete! Main View: {interval}")
+            elif len(st.session_state.multi_tf_results) > 0:
+                 # If main failed but others worked
+                 first_key = list(st.session_state.multi_tf_results.keys())[0]
+                 st.session_state.bt_results = st.session_state.multi_tf_results[first_key]
+                 st.warning(f"Main timeframe {interval} had no data. Showing {first_key} instead.")
             else:
+                 st.session_state.bt_results = None
+                 st.error("No data found for any timeframe.")
+
+        # --- DISPLAY RESULTS / MULTI-TF SELECTOR ---
+        
+        if st.session_state.bt_results:
+            
+            # --- MULTI-TIMEFRAME SELECTOR ---
+            if len(st.session_state.multi_tf_results) > 1:
+                st.markdown("### 🕰️ Multi-Timeframe Analysis")
+                
+                # Create a summary DataFrame
+                summary_data = []
+                for tf, res in st.session_state.multi_tf_results.items():
+                    m = res['metrics']
+                    summary_data.append({
+                        "Timeframe": tf,
+                        "PnL": res['final_capital'] - initial_cap,
+                        "Win Rate %": m['win_rate'],
+                        "Profit Factor": m['profit_factor'],
+                        "Trades": m['total_trades']
+                    })
+                
+                df_summary = pd.DataFrame(summary_data)
+                
+                # Display Summary Table with formatting
+                st.dataframe(
+                    df_summary.style.format({
+                        "PnL": "${:.2f}", 
+                        "Win Rate %": "{:.1f}", 
+                        "Profit Factor": "{:.2f}"
+                    }), 
+                    use_container_width=True,
+                    hide_index=True
+                )
+                
+                # Selector to switch view
+                selected_tf = st.selectbox(
+                    "🔍 Select Timeframe for Deeper Insight:", 
+                    list(st.session_state.multi_tf_results.keys()),
+                    index=0
+                )
+                
+                # Update the main session state result based on selection
+                if selected_tf != st.session_state.bt_results.get('timeframe_id', ''): # Simple check logic
+                     st.session_state.bt_results = st.session_state.multi_tf_results[selected_tf]
+                     # Mark it so we know which one
+                     st.session_state.bt_results['timeframe_id'] = selected_tf
+                     st.rerun()
+
+            # --- MAIN RESULTS VIEW (Existing Code) ---
+            res = st.session_state.bt_results
+            # Use stored initial capital if available, else fallback to widget value
+            initial_cap_val = res.get('initial_capital', initial_cap)
+            
+            m = res['metrics']
+            net_profit = res['final_capital'] - initial_cap_val
+            data_hist = res.get('history', pd.DataFrame())
+            
+            # --- OVERVIEW METRICS ---
+            st.markdown("### 📊 Performance Summary")
+            
+            # Additional Metrics
+            max_dd = res.get('max_drawdown', 0.0)
+            bh_return = 0.0
+            if not data_hist.empty:
+                bh_return = ((data_hist['Close'].iloc[-1] - data_hist['Close'].iloc[0]) / data_hist['Close'].iloc[0]) * 100
+                
+            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+            col_m1.metric("Net Profit", f"${net_profit:,.2f}", f"{(net_profit/initial_cap_val)*100:.2f}%")
+            col_m2.metric("Total Trades", m['total_trades'])
+            col_m3.metric("Profit Factor", f"{m['profit_factor']:.2f}")
+            col_m4.metric("Max Drawdown", f"{max_dd:.2f}%")
+            col_m5.metric("Buy & Hold", f"{bh_return:.2f}%")
+
+            st.markdown("---")
+            
+            # --- CHART VISUALIZATION ---
+            st.markdown("### 📈 Trade Visualization")
+            
+            if not data_hist.empty:
+                # Create Subplots: Row 1 = Candle, Row 2 = Equity
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08, row_heights=[0.7, 0.3],
+                                    subplot_titles=(f"Price Action & Trades ({ticker})", "Equity Curve"))
+                
+                # 1. Candlestick
+                fig.add_trace(go.Candlestick(
+                    x=data_hist.index,
+                    open=data_hist['Open'],
+                    high=data_hist['High'],
+                    low=data_hist['Low'],
+                    close=data_hist['Close'],
+                    name="Price"
+                ), row=1, col=1)
+                
+                # 2. Indicators (Optional - e.g. SMA)
+                # We could pull indicators from data if we saved them... mostly they are in 'data' if strategy calculated them?
+                # The 'data' returned by strategy.generate_signals() has indicators.
+                # Let's check columns for common indicators like 'SMA_20', 'upper', etc.
+                for col in data_hist.columns:
+                    if col.startswith('SMA') or col in ['upper', 'lower', 'basis']:
+                        fig.add_trace(go.Scatter(x=data_hist.index, y=data_hist[col], name=col,
+                                                 line=dict(width=1), opacity=0.7), row=1, col=1)
+                
+                # 3. Trade Markers
+                trades = res['trades']
+                if not trades.empty:
+                    # Buys
+                    buys = trades[trades['Type'] == 'BUY']
+                    if not buys.empty:
+                        fig.add_trace(go.Scatter(
+                            x=buys['Date'], y=buys['Price'],
+                            mode='markers',
+                            name='Buy',
+                            marker=dict(symbol='triangle-up', size=12, color='#00cc96', line=dict(width=1, color='black'))
+                        ), row=1, col=1)
+                    
+                    # Sells
+                    sells = trades[trades['Type'] == 'SELL']
+                    if not sells.empty:
+                        fig.add_trace(go.Scatter(
+                            x=sells['Date'], y=sells['Price'],
+                            mode='markers',
+                            name='Sell',
+                            marker=dict(symbol='triangle-down', size=12, color='#ef553b', line=dict(width=1, color='black'))
+                        ), row=1, col=1)
+
+                # 4. Equity Curve
+                eq_curve = res['equity_curve']
+                fig.add_trace(go.Scatter(
+                    x=eq_curve.index, y=eq_curve['Equity'],
+                    name="Equity",
+                    line=dict(color='#66fcf1', width=2),
+                    fill='tozeroy',
+                    fillcolor='rgba(102, 252, 241, 0.1)'
+                ), row=2, col=1)
+                
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=700,
+                    hovermode='x unified',
+                    showlegend=True,
+                    xaxis_rangeslider_visible=False,
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)'
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+
+            # --- LIST OF TRADES ---
+            st.markdown("### 📝 List of Trades")
+            trades = res['trades']
+            if not trades.empty:
+                # Filter for Exits (Closed Trades)
+                closed_trades = trades[trades['Type'] == 'SELL'].copy()
+                
+                if not closed_trades.empty:
+                    # Calculate Stats for Table
+                    # Reconstruct Entry Price for display: Entry = Exit - (PnL / (Size * Mult))
+                    # Note: This implies Avg Entry Price if multiple entries.
+                    # PnL = (Exit - Entry) * Size * Mult
+                    # PnL / Size / Mult = Exit - Entry
+                    # Entry = Exit - (PnL / (Size * Mult))
+                    
+                    # Ensure numeric
+                    closed_trades['Value'] = pd.to_numeric(closed_trades['Value'])
+                    closed_trades['Size'] = pd.to_numeric(closed_trades['Size'])
+                    
+                    # Avoid division by zero
+                    def calc_entry(row):
+                         s = row['Size'] if row['Size'] != 0 else 1
+                         m = multiplier if multiplier != 0 else 1
+                         return row['Price'] - (row['Value'] / (s * m))
+
+                    closed_trades['Entry Price'] = closed_trades.apply(calc_entry, axis=1)
+                    
+                    # Format for Display
+                    display_df = pd.DataFrame()
+                    display_df['Exit Date'] = closed_trades['Date']
+                    display_df['Type'] = "Long" # We only have Longs in this simple engine
+                    display_df['Entry Price'] = closed_trades['Entry Price']
+                    display_df['Exit Price'] = closed_trades['Price']
+                    display_df['Contracts'] = closed_trades['Size']
+                    display_df['PnL'] = closed_trades['Value']
+                    display_df['PnL %'] = (display_df['PnL'] / (display_df['Entry Price'] * display_df['Contracts'] * multiplier)) * 100
+                    
+                    # Formatting
+                    st.dataframe(
+                        display_df.style.format({
+                            "Entry Price": "{:.2f}",
+                            "Exit Price": "{:.2f}",
+                            "PnL": "${:.2f}",
+                            "PnL %": "{:.2f}%",
+                            "Contracts": "{:.0f}"
+                        }).map(lambda x: f"color: {'#66fcf1' if x>0 else '#ff6b6b'}", subset=['PnL', 'PnL %']),
+                        use_container_width=True
+                    )
+                else:
+                    st.info("No trades closed yet.")
+            else:
+                 st.info("No trades generated.")
+        else:
+             if not run_btn: # Only show ready state if not just ran (which would settle into results or error)
                  st.markdown("""
                  <div style="display: flex; justify-content: center; align-items: center; height: 400px; color: #45a29e; border: 2px dashed #333; border-radius: 20px;">
                     <h3>Ready to Initialize Simulation</h3>
