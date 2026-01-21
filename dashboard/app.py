@@ -270,7 +270,7 @@ if nav == "Dashboard":
                     if not df_snap.empty:
                         fig = go.Figure(data=[go.Candlestick(x=df_snap.index, open=df_snap['Open'], high=df_snap['High'], low=df_snap['Low'], close=df_snap['Close'])])
                         fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                         
                         last_close = df_snap['Close'].iloc[-1]
                         prev_close = df_snap['Close'].iloc[-2]
@@ -318,7 +318,7 @@ if nav == "Dashboard":
             fig_eq = px.area(res['equity_curve'], x=res['equity_curve'].index, y="Equity", template="plotly_dark")
             fig_eq.update_traces(line_color='#66fcf1', fillcolor='rgba(102, 252, 241, 0.1)')
             fig_eq.update_layout(height=350, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_eq, use_container_width=True)
+            st.plotly_chart(fig_eq, width="stretch")
         
         with col_side:
             st.markdown("### 🎯 Trade Distribution")
@@ -330,7 +330,7 @@ if nav == "Dashboard":
                 losses = len(exits[exits['Value'] <= 0])
                 fig_pie = px.pie(values=[wins, losses], names=['Wins', 'Losses'], color_discrete_sequence=['#66fcf1', '#ff6b6b'], hole=0.6)
                 fig_pie.update_layout(template="plotly_dark", height=350, showlegend=True, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_pie, use_container_width=True)
+                st.plotly_chart(fig_pie, width="stretch")
 
 # --- VIEW: STRATEGY LAB ---
 elif nav == "Strategy Lab":
@@ -549,7 +549,7 @@ elif nav == "Strategy Lab":
                         "Win Rate %": "{:.1f}", 
                         "Profit Factor": "{:.2f}"
                     }), 
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
                 
@@ -663,7 +663,7 @@ elif nav == "Strategy Lab":
                     plot_bgcolor='rgba(0,0,0,0)'
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
             # --- LIST OF TRADES ---
             st.markdown("### 📝 List of Trades")
@@ -711,7 +711,7 @@ elif nav == "Strategy Lab":
                             "PnL %": "{:.2f}%",
                             "Contracts": "{:.0f}"
                         }).map(lambda x: f"color: {'#66fcf1' if x>0 else '#ff6b6b'}", subset=['PnL', 'PnL %']),
-                        use_container_width=True
+                        width="stretch"
                     )
                 else:
                     st.info("No trades closed yet.")
@@ -852,7 +852,7 @@ elif nav == "Trade Journal":
 
             st.dataframe(
                 exits[['Date', 'Price', 'Contracts', 'PnL (Realized)']].style.map(color_pnl, subset=['PnL (Realized)']),
-                use_container_width=True,
+                width="stretch",
                 height=600
             )
         else:
