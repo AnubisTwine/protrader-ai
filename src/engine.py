@@ -162,7 +162,7 @@ class BacktestEngine:
                 # Fallback to simple spot loop with "virtual" capital checking for this iteration to avoid rewriting entire engine state.
                 # Using the modify_file logic below to inject updated Run method.
                 
-    def run(self, strategy: Strategy, multiplier: float = 1.0, leverage: float = 1.0, fixed_size: int = 0, pyramiding_limit: int = 1):
+    def run(self, strategy: Strategy, multiplier: float = 1.0, leverage: float = 1.0, fixed_size: int = 0, pyramiding_limit: int = 1, stop_loss_pct: float = 0.0, take_profit_pct: float = 0.0):
         data = strategy.generate_signals()
         
         self.entry_count = 0
@@ -170,8 +170,44 @@ class BacktestEngine:
         
         for index, row in data.iterrows():
             price = row['Close']
+            # Fallback to Close if High/Low missing
+            high = row.get('High', price)
+            low = row.get('Low', price)
             signal = row.get('signal', 0)
             
+            # --- CHECK STOPS (Before Signal) ---
+            exit_signal = False
+            if self.position > 0:
+                 sl_price = self.avg_entry_price * (1 - stop_loss_pct)
+                 tp_price = self.avg_entry_price * (1 + take_profit_pct)
+                 
+                 exit_price = None
+                 exit_type = None
+                 
+                 # Check Low for SL
+                 if stop_loss_pct > 0 and low <= sl_price:
+                      exit_price = sl_price
+                      exit_type = "STOP_LOSS"
+                 # Check High for TP
+                 elif take_profit_pct > 0 and high >= tp_price:
+                      exit_price = tp_price
+                      exit_type = "TAKE_PROFIT"
+                      
+                 if exit_price:
+                      pnl = (exit_price - self.avg_entry_price) * self.position * multiplier
+                      self.capital += pnl
+                      self.trade_log.append({
+                            'Date': index,
+                            'Type': exit_type,
+                            'Price': exit_price,
+                            'Size': self.position, 
+                            'Value': pnl
+                      })
+                      self.position = 0
+                      self.entry_count = 0
+                      self.avg_entry_price = 0.0
+                      exit_signal = True # Position closed
+
             # Mark to Market Equity
             # Equity = Cash + Unrealized PnL
             unrealized_pnl = 0
@@ -180,6 +216,10 @@ class BacktestEngine:
             
             current_equity = self.capital + unrealized_pnl
             self.equity_curve.append({'Date': index, 'Equity': current_equity})
+
+            # Don't process entry signals if we just stopped out same bar
+            if exit_signal:
+                continue
 
             # BUY
             if signal == 1 and (self.position == 0 or (self.position > 0 and self.entry_count < pyramiding_limit)):

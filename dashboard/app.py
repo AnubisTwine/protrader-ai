@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 import sys
 import os
 import json # Added for AI response parsing
+import textwrap
 import importlib
 import datetime
 import yfinance as yf
@@ -200,7 +201,7 @@ def get_kpi_card(title, value, is_positive=True, prefix="", suffix=""):
     </div>
     """
 
-def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy_type, params, multiplier, leverage, fixed_size, pyramiding_limit):
+def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy_type, params, multiplier, leverage, fixed_size, pyramiding_limit, stop_loss_pct=0.0, take_profit_pct=0.0):
     try:
         # Load Data
         fetch_start = start_date
@@ -236,7 +237,7 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
         
         # Run Engine
         engine = BacktestEngine(initial_capital=initial_capital)
-        results = engine.run(strategy, multiplier=multiplier, leverage=leverage, fixed_size=fixed_size, pyramiding_limit=pyramiding_limit)
+        results = engine.run(strategy, multiplier=multiplier, leverage=leverage, fixed_size=fixed_size, pyramiding_limit=pyramiding_limit, stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct)
         
         # Calculate Extra Stats for Journal/Dash
         trades = results['trades']
@@ -454,12 +455,12 @@ if nav == "AI Trading Suite":
                             type='category', 
                             nticks=10,
                             tickmode='auto',
-                            showticklabels=False if r < rows else True,
+                            showticklabels=False, # Removed dates completely
                             row=r, col=1
                         )
                 else:
                      for r in range(1, rows + 1):
-                        fig.update_xaxes(showticklabels=False if r < rows else True, row=r, col=1)
+                        fig.update_xaxes(showticklabels=False, row=r, col=1) # Removed dates completely
                 
                 # Initialize AI Annotations if available
                 if 'ai_analysis_json' in st.session_state and st.session_state.ai_analysis_json:
@@ -486,41 +487,7 @@ if nav == "AI Trading Suite":
                 st.plotly_chart(fig, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True) # End Card
 
-                # --- CARD: MULTI-TIMEFRAME ANALYSIS ---
-                st.markdown('<div class="card-container">', unsafe_allow_html=True)
-                st.markdown('<div class="card-header">🕒 Multi-Timeframe Analysis</div>', unsafe_allow_html=True)
-                
-                mtf_cols = st.columns(3)
-                # Define 3 key timeframes
-                mtf_tfs = ["15m", "1h", "1d"]
-                
-                for i, tf in enumerate(mtf_tfs):
-                     with mtf_cols[i]:
-                         st.markdown(f"#### {tf.upper()}")
-                         # Quick fetch for sparkline/trend
-                         try:
-                            # Reuse existing connection if possible, or fetch new
-                            if tf == "15m": d_start = now - datetime.timedelta(days=5)
-                            elif tf == "1h": d_start = now - datetime.timedelta(days=20)
-                            else: d_start = now - datetime.timedelta(days=365)
-                            
-                            df_mtf = DataLoader.get_data(ticker, str(d_start.date()), str(now.date() + datetime.timedelta(days=1)), interval=tf)
-                            if not df_mtf.empty:
-                                mtf_close = df_mtf['Close'].iloc[-1]
-                                mtf_sma20 = df_mtf['Close'].rolling(20).mean().iloc[-1]
-                                mtf_trend = "BULLISH" if mtf_close > mtf_sma20 else "BEARISH"
-                                mtf_color = "green" if mtf_trend == "BULLISH" else "red"
-                                
-                                st.markdown(f"**Trend:** <span style='color:{mtf_color}'>{mtf_trend}</span>", unsafe_allow_html=True)
-                                
-                                # Mini Sparkline
-                                st.line_chart(df_mtf['Close'].tail(30), height=100)
-                            else:
-                                st.write("No Data")
-                         except:
-                             st.write("N/A")
 
-                st.markdown('</div>', unsafe_allow_html=True)
 
                 # --- CALCULATE SENTIMENT VARIABLES ---
                 last_close = df['Close'].iloc[-1]
@@ -583,6 +550,23 @@ if nav == "AI Trading Suite":
                                  # Prepare Context
                                  recent_data = df.tail(15).to_string() # Increased context
                                  
+                                 # Fetch Concurrent Data for Multi-Timeframe Prompt
+                                 mtf_context = ""
+                                 for m_tf in ["15m", "1h", "1d"]:
+                                     try:
+                                         if m_tf == "15m": dx_start = now - datetime.timedelta(days=5)
+                                         elif m_tf == "1h": dx_start = now - datetime.timedelta(days=20)
+                                         else: dx_start = now - datetime.timedelta(days=365)
+                                         
+                                         dx = DataLoader.get_data(ticker, str(dx_start.date()), str(now.date() + datetime.timedelta(days=1)), interval=m_tf)
+                                         if not dx.empty:
+                                            # Simple technicals for the prompt
+                                            curr = dx['Close'].iloc[-1]
+                                            sma_ref = dx['Close'].rolling(20).mean().iloc[-1] if len(dx) > 20 else curr
+                                            mtf_context += f"\nTimeframe {m_tf}: Price={curr:.2f}, SMA20={sma_ref:.2f}, Last5Candles={dx.tail(5)['Close'].tolist()}"
+                                     except:
+                                         pass
+
                                  # Construct Header with Indicators
                                  ind_summary = f"Indicators Active: {', '.join(active_inds)}\n"
                                  if "SMA (50)" in active_inds: ind_summary += f"SMA(50): {df['SMA_50'].iloc[-1]:.2f}\n"
@@ -591,19 +575,22 @@ if nav == "AI Trading Suite":
                                  if "MACD" in active_inds: ind_summary += f"MACD: {df['MACD'].iloc[-1]:.2f}\n"
 
                                  prompt_content = f"""
-                                 You are an expert financial trading analyst. Analyze the following market data for {ticker} on a {selected_tf} timeframe.
+                                 You are an expert financial trading analyst. Analyze the following market data for {ticker} across multiple timeframes.
                                  
-                                 Technical Context:
+                                 A. SELECTED TIMEFRAME ({selected_tf}) CONTEXT:
                                  - Current Price: {last_close:.2f}
                                  - SMA(20): {last_sma:.2f}
                                  - Technical Sentiment: {sent_text}
                                  {ind_summary}
                                  
-                                 Recent OHLCV Data:
+                                 Recent OHLCV Data ({selected_tf}):
                                  {recent_data}
                                  
+                                 B. CROSS-TIMEFRAME CONTEXT:
+                                 {mtf_context}
+                                 
                                  Task:
-                                 Analyze the market and provide a JSON response.
+                                 Analyze the market and provide a detailed JSON response that covers specific analysis for 15m, 1h, and 1d timeframes.
                                  
                                  Required JSON Structure:
                                  {{
@@ -611,7 +598,30 @@ if nav == "AI Trading Suite":
                                     "trend": "Bullish/Bearish/Neutral",
                                     "support_levels": [price_float_1, price_float_2],
                                     "resistance_levels": [price_float_1, price_float_2],
-                                    "key_signal": "BUY / SELL / WAIT"
+                                    "key_signal": "BUY / SELL / WAIT",
+                                    "timeframes": {{
+                                        "15m": {{
+                                            "trend": "BULLISH/BEARISH/NEUTRAL",
+                                            "analysis": "Short sentence analysis.",
+                                            "support": [level1],
+                                            "resistance": [level1],
+                                            "rating": 1-5 (int)
+                                        }},
+                                        "1h": {{
+                                            "trend": "BULLISH/BEARISH/NEUTRAL",
+                                            "analysis": "Short sentence analysis.",
+                                            "support": [level1],
+                                            "resistance": [level1],
+                                            "rating": 1-5 (int)
+                                        }},
+                                        "1d": {{
+                                            "trend": "BULLISH/BEARISH/NEUTRAL",
+                                            "analysis": "Short sentence analysis.",
+                                            "support": [level1],
+                                            "resistance": [level1],
+                                            "rating": 1-5 (int)
+                                        }}
+                                    }}
                                  }}
                                  
                                  Ensure the price levels are derived from the recent data provided.
@@ -669,6 +679,67 @@ if nav == "AI Trading Suite":
                         st.caption(f"**Supports:** {s_levels} | **Resistances:** {r_levels}")
 
                     st.markdown('</div>', unsafe_allow_html=True)
+                
+                # --- CARD: MULTI-TIMEFRAME ANALYSIS ---
+                if 'ai_analysis_json' in st.session_state and st.session_state.ai_analysis_json:
+                    ai_data = st.session_state.ai_analysis_json
+                    ai_mtf_data = ai_data.get("timeframes", {})
+                    
+                    if ai_mtf_data:
+                        st.markdown('<div class="card-container">', unsafe_allow_html=True)
+                        st.markdown('<div class="card-header">🕒 Multi-Timeframe Matrix</div>', unsafe_allow_html=True)
+                        
+                        mtf_cols = st.columns(3)
+                        mtf_tfs = ["15m", "1h", "1d"]
+                        
+                        for i, tf in enumerate(mtf_tfs):
+                            if tf in ai_mtf_data:
+                                d = ai_mtf_data[tf]
+                                trend = d.get("trend", "NEUTRAL")
+                                rating = d.get("rating", 3)
+                                analysis = d.get("analysis", "No Data")
+                                sup = d.get("support", [])
+                                res = d.get("resistance", [])
+                                
+                                # Styling based on trend
+                                border_color = "#45a29e"
+                                if "BULL" in trend.upper(): border_color = "#00cc96"
+                                elif "BEAR" in trend.upper(): border_color = "#ef553b"
+                                
+                                
+                                with mtf_cols[i]:
+                                    html_content = f"""
+                                    <div style="background-color: #1f2833; padding: 15px; border-radius: 10px; border: 1px solid {border_color}; height: 100%;">
+                                        <div style="text-align: center; margin-bottom: 10px;">
+                                            <span style="font-size: 0.8em; color: #888; font-weight: bold; letter-spacing: 2px;">INTERVAL</span><br>
+                                            <span style="font-size: 1.5em; font-style: italic; font-weight: 900; color: #66fcf1;">{tf.upper()}</span>
+                                        </div>
+                                        
+                                        <div style="margin-bottom: 15px;">
+                                            <div style="font-size: 0.7em; color: #888; text-transform: uppercase; font-weight: bold;">Trend Vector</div>
+                                            <div style="color: {border_color}; font-weight: bold;">{trend}</div>
+                                            <div style="color: #ffd700;">{'⭐' * rating}</div>
+                                        </div>
+                                        
+                                        <div style="margin-bottom: 15px; font-size: 0.9em; line-height: 1.4; color: #ccc;">
+                                            {analysis}
+                                        </div>
+                                        
+                                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.8em;">
+                                            <div style="background: rgba(0, 204, 150, 0.1); padding: 5px; border-radius: 5px; text-align: center;">
+                                                <div style="color: #00cc96; font-weight: bold;">DEMAND</div>
+                                                <div>{', '.join(map(str, sup)) if sup else '-'}</div>
+                                            </div>
+                                            <div style="background: rgba(239, 85, 59, 0.1); padding: 5px; border-radius: 5px; text-align: center;">
+                                                <div style="color: #ef553b; font-weight: bold;">SUPPLY</div>
+                                                <div>{', '.join(map(str, res)) if res else '-'}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    """
+                                    st.markdown(textwrap.dedent(html_content), unsafe_allow_html=True)
+                                    
+                        st.markdown('</div>', unsafe_allow_html=True)
 
             else:
                 st.warning(f"No data available for {ticker} on {selected_tf} timeframe.")
@@ -822,6 +893,13 @@ elif nav == "Strategy Lab":
             multiplier = st.number_input("Multiplier", value=def_mult, help="Value of 1 point movement per contract.")
             leverage = st.number_input("Leverage", 1.0, 100.0, def_lev, help="10x means 10% margin required.")
             
+            # --- NEW RISK INPUTS ---
+            c_sl, c_tp = st.columns(2)
+            with c_sl:
+                stop_loss = st.number_input("Stop Loss %", 0.0, 20.0, 0.0, step=0.5, help="0.0 to disable") / 100
+            with c_tp:
+                take_profit = st.number_input("Take Profit %", 0.0, 50.0, 0.0, step=0.5, help="0.0 to disable") / 100
+
             mode = st.selectbox("Sizing", ["Fixed Contracts", "Use Full Margin"])
             fixed_size = 0
             
@@ -898,7 +976,7 @@ elif nav == "Strategy Lab":
                 # But to save time, maybe cap history for < 15m?
                 # User simply asked to test. Let's let logic handle it.
                 
-                res, err = run_backtest_logic(start_date, end_date, tf, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding)
+                res, err = run_backtest_logic(start_date, end_date, tf, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding, stop_loss, take_profit)
                 
                 if res:
                     st.session_state.multi_tf_results[tf] = res
@@ -1068,6 +1146,53 @@ elif nav == "Strategy Lab":
                 )
                 
                 st.plotly_chart(fig, width="stretch")
+
+                # --- NEW VISUALS: DRAWDOWN & HEATMAP ---
+                col_viz1, col_viz2 = st.columns(2)
+                
+                # 1. Drawdown Chart (Underwater Plot)
+                with col_viz1:
+                    st.markdown("#### 🌊 Underwater Plot (Drawdown)")
+                    equity_df = res['equity_curve']
+                    fig_dd = px.area(equity_df, x=equity_df.index, y='Drawdown', 
+                                    title='Drawdown %', color_discrete_sequence=['#ff6b6b'])
+                    fig_dd.update_layout(template="plotly_dark", height=300, margin=dict(l=0,r=0,t=40,b=0),
+                                        yaxis_tickformat='.1%')
+                    st.plotly_chart(fig_dd, use_container_width=True)
+
+                # 2. Monthly Returns Heatmap
+                with col_viz2:
+                    st.markdown("#### 📅 Monthly Performance")
+                    try:
+                        # Resample to Monthly Returns
+                        # Need to handle potential empty index or non-datetime
+                        # 'ME' is Month End in newer pandas, 'M' in older. 'M' is deprecated in newest. 
+                        # Using 'M' for safety as it works in most recent versions with warning, but 'ME' fails in old.
+                        monthly = equity_df['Equity'].resample('M').last().pct_change()
+                        monthly_df = monthly.to_frame(name='Return')
+                        monthly_df['Year'] = monthly_df.index.year
+                        monthly_df['Month'] = monthly_df.index.month_name()
+                        
+                        # Pivot for Heatmap
+                        heatmap_data = monthly_df.pivot(index='Year', columns='Month', values='Return')
+                        
+                        # Sort months correctly
+                        month_order = ['January', 'February', 'March', 'April', 'May', 'June', 
+                                     'July', 'August', 'September', 'October', 'November', 'December']
+                        # Ensure only months that exist in the data columns are in the order list to avoid error if columns missing?
+                        # No, reindex works fine with missing cols (inserts NaNs)
+                        heatmap_data = heatmap_data.reindex(columns=month_order)
+                        
+                        fig_hm = px.imshow(heatmap_data, 
+                                          labels=dict(x="Month", y="Year", color="Return"),
+                                          x=heatmap_data.columns,
+                                          y=heatmap_data.index,
+                                          color_continuous_scale="RdBu",
+                                          text_auto='.1%')
+                        fig_hm.update_layout(template="plotly_dark", height=300, margin=dict(l=0,r=0,t=40,b=0))
+                        st.plotly_chart(fig_hm, use_container_width=True)
+                    except Exception as e:
+                        st.caption(f"Not enough data for heatmap or error: {e}")
 
             # --- LIST OF TRADES ---
             st.markdown("### 📝 List of Trades")
