@@ -5,8 +5,14 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import sys
 import os
+import json # Added for AI response parsing
 import importlib
 import datetime
+import yfinance as yf
+from textblob import TextBlob
+import openai
+from openai import OpenAI
+
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="ProTrader AI", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
@@ -127,6 +133,23 @@ st.markdown("""
         color: #0b0c10;
         font-weight: bold;
     }
+    /* Card Style */
+    .card-container {
+        background-color: #1f2833;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        margin-bottom: 20px;
+        border: 1px solid #c5c6c7;
+    }
+    .card-header {
+        font-size: 1.2rem;
+        font-weight: bold;
+        color: #66fcf1;
+        margin-bottom: 15px;
+        border-bottom: 1px solid #45a29e;
+        padding-bottom: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -139,12 +162,16 @@ if 'saved_strategies' not in st.session_state:
     st.session_state.saved_strategies = {}
 if 'builder_entry_rules' not in st.session_state: st.session_state.builder_entry_rules = []
 if 'builder_exit_rules' not in st.session_state: st.session_state.builder_exit_rules = []
-if 'navigation' not in st.session_state: st.session_state.navigation = "Dashboard"
+if 'navigation' not in st.session_state: st.session_state.navigation = "AI Trading Suite"
+if 'github_token' not in st.session_state: st.session_state.github_token = ""
 
 # --- SIDEBAR NAV ---
 st.sidebar.image("https://img.icons8.com/nolan/96/bullish.png", width=60)
 st.sidebar.markdown("## ProTrader AI")
-nav = st.sidebar.radio("Navigation", ["Dashboard", "Strategy Lab", "Strategy Builder", "Trade Journal", "Settings"], key="navigation")
+nav = st.sidebar.radio("Navigation", ["AI Trading Suite", "Strategy Lab", "Strategy Builder", "Trade Journal", "Settings"], key="navigation")
+
+if not st.session_state.github_token:
+    st.sidebar.warning("⚠️ No GitHub Token found. AI features will be limited. Go to Settings to configure.")
 
 st.sidebar.markdown("---")
 
@@ -250,87 +277,464 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
         return None, str(e)
 
 
-# --- VIEW: DASHBOARD ---
-if nav == "Dashboard":
-    st.markdown(f"# 📊 Command Center: {ticker}")
+if nav == "AI Trading Suite":
+    st.markdown(f"# 🤖 AI Trading Suite {ticker}")
     
-    # If no results, show "Ready" state
-    if st.session_state.bt_results is None:
-        st.info("👋 Welcome to ProTrader AI. The system is ready. Go to the 'Strategy Lab' to generate your first backtest.")
-        
-        # Placeholder / Market Check
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.markdown("### Market Snapshot (Live)")
-            with st.spinner("Fetching live market data..."):
-                try:
-                    now = datetime.date.today()
-                    start_snap = now - datetime.timedelta(days=100)
-                    df_snap = DataLoader.get_data(ticker, str(start_snap), str(now), interval='1d')
-                    if not df_snap.empty:
-                        fig = go.Figure(data=[go.Candlestick(x=df_snap.index, open=df_snap['Open'], high=df_snap['High'], low=df_snap['Low'], close=df_snap['Close'])])
-                        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                        st.plotly_chart(fig, width="stretch")
-                        
-                        last_close = df_snap['Close'].iloc[-1]
-                        prev_close = df_snap['Close'].iloc[-2]
-                        chg_pct = ((last_close - prev_close)/prev_close)*100
-                        col_text = "#66fcf1" if chg_pct >= 0 else "#ff6b6b"
-                        
-                        st.markdown(f"""
-                        <div style="font-size: 3rem; font-weight: bold; color: {col_text}">
-                            ${last_close:.2f} <span style="font-size: 1.5rem">({chg_pct:+.2f}%)</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        st.warning("No live data available for this ticker.")
-                except Exception as e:
-                    st.warning(f"Could not fetch live data: {e}")
-        
-        with col2:
-            st.markdown("### Quick Actions")
-            st.markdown("Jump straight into analysis:")
-            
-            def go_to_lab():
-                st.session_state.navigation = "Strategy Lab"
-            
-            st.button("🚀 Launch Strategy Lab", on_click=go_to_lab) 
+    # AI Analysis Request State
+    if 'ai_analysis_text' not in st.session_state:
+        st.session_state.ai_analysis_text = ""
+    if 'ai_analysis_json' not in st.session_state:
+        st.session_state.ai_analysis_json = None
+    if 'active_indicators' not in st.session_state:
+        st.session_state.active_indicators = ["SMA (20)", "RSI (14)"] # Defaults
 
-    else:
-        # DISPLAY RESULTS DASHBOARD
-        res = st.session_state.bt_results
-        metrics = res['metrics']
-        
-        # 1. TOP ROW CARDS
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.markdown(get_kpi_card("Net Profit", f"{res['final_capital'] - 10000:.2f}", (res['final_capital'] >= 10000), "$"), unsafe_allow_html=True)
-        with c2: st.markdown(get_kpi_card("Win Rate", f"{metrics['win_rate']:.1f}", (metrics['win_rate'] >= 50), suffix="%"), unsafe_allow_html=True)
-        with c3: st.markdown(get_kpi_card("Profit Factor", f"{metrics['profit_factor']:.2f}", (metrics['profit_factor'] >= 1.5)), unsafe_allow_html=True)
-        with c4: st.markdown(get_kpi_card("Sharpe Ratio", f"{res['sharpe_ratio']:.2f}", (res['sharpe_ratio'] > 1.0)), unsafe_allow_html=True)
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        
-        # 2. VISUALS
-        col_main, col_side = st.columns([2, 1])
-        
-        with col_main:
-            st.markdown("### 📈 Equity Growth")
-            fig_eq = px.area(res['equity_curve'], x=res['equity_curve'].index, y="Equity", template="plotly_dark")
-            fig_eq.update_traces(line_color='#66fcf1', fillcolor='rgba(102, 252, 241, 0.1)')
-            fig_eq.update_layout(height=350, margin=dict(l=0,r=0,t=0,b=0), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_eq, width="stretch")
-        
-        with col_side:
-            st.markdown("### 🎯 Trade Distribution")
-            # Create a Pie generic
-            trades = res['trades']
-            exits = trades[trades['Type'] == 'SELL']
-            if not exits.empty:
-                wins = len(exits[exits['Value'] > 0])
-                losses = len(exits[exits['Value'] <= 0])
-                fig_pie = px.pie(values=[wins, losses], names=['Wins', 'Losses'], color_discrete_sequence=['#66fcf1', '#ff6b6b'], hole=0.6)
-                fig_pie.update_layout(template="plotly_dark", height=350, showlegend=True, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_pie, width="stretch")
+    # --- TOP CONTROLS ---
+    # Custom stylized timeframe selector using tabs or columns to look like buttons
+    # Since st.pills is new, we use radio with horizontal for stability or standard pills if version allows. 
+    # For now, let's use a nice horizontal radio which is reliable.
+    
+    c_ctrl1, c_ctrl2, c_ctrl3 = st.columns([1, 1, 2], gap="medium")
+    
+    with c_ctrl1:
+        st.write("⏱️ **Timeframe**")
+        selected_tf = st.selectbox("Select Timeframe", ["5m", "15m", "30m", "1h", "4h", "1d", "1wk"], index=5, label_visibility="collapsed")
+
+    with c_ctrl2:
+        st.write("📊 **Indicators**")
+        with st.popover("Add Indicators"):
+            st.markdown("### Chart Overlays")
+            ind_sma20 = st.checkbox("SMA (20)", value="SMA (20)" in st.session_state.active_indicators)
+            ind_sma50 = st.checkbox("SMA (50)", value="SMA (50)" in st.session_state.active_indicators)
+            ind_sma200 = st.checkbox("SMA (200)", value="SMA (200)" in st.session_state.active_indicators)
+            ind_bb = st.checkbox("Bollinger Bands", value="Bollinger Bands" in st.session_state.active_indicators)
+            
+            st.markdown("### Oscillators")
+            ind_rsi = st.checkbox("RSI (14)", value="RSI (14)" in st.session_state.active_indicators)
+            ind_macd = st.checkbox("MACD", value="MACD" in st.session_state.active_indicators)
+            
+            # Update State
+            current_inds = []
+            if ind_sma20: current_inds.append("SMA (20)")
+            if ind_sma50: current_inds.append("SMA (50)")
+            if ind_sma200: current_inds.append("SMA (200)")
+            if ind_bb: current_inds.append("Bollinger Bands")
+            if ind_rsi: current_inds.append("RSI (14)")
+            if ind_macd: current_inds.append("MACD")
+            st.session_state.active_indicators = current_inds
+
+    with c_ctrl3:
+        st.write("🧠 **AI Analyst**")
+        if st.button("Generate AI Market Report", type="primary", use_container_width=True):
+             st.session_state.run_ai_analysis = True
+        else:
+             st.session_state.run_ai_analysis = False
+
+
+    # 2. Fetch Data
+    with st.spinner(f"Fetching {selected_tf} market data for {ticker}..."):
+        try:
+            now = datetime.datetime.now()
+            
+            # Determine start date based on timeframe to optimize fetch and meet yfinance limits
+            if selected_tf == "5m":
+                start_date = now - datetime.timedelta(days=5) # Max ~60 days
+                interval_yf = "5m"
+            elif selected_tf == "15m":
+                start_date = now - datetime.timedelta(days=10)
+                interval_yf = "15m"
+            elif selected_tf == "30m":
+                start_date = now - datetime.timedelta(days=20)
+                interval_yf = "30m"
+            elif selected_tf == "1h":
+                start_date = now - datetime.timedelta(days=45) # Max 730 days
+                interval_yf = "1h"
+            elif selected_tf == "4h":
+                start_date = now - datetime.timedelta(days=90)
+                interval_yf = "1h" # Use 1h data
+            elif selected_tf == "1wk":
+                start_date = now - datetime.timedelta(days=730)
+                interval_yf = "1wk"
+            else: # 1d
+                start_date = now - datetime.timedelta(days=365)
+                interval_yf = "1d"
+            
+            # Use DataLoader
+            df = DataLoader.get_data(ticker, str(start_date.date()), str(now.date() + datetime.timedelta(days=1)), interval=interval_yf)
+            
+            if not df.empty:
+                active_inds = st.session_state.active_indicators
+                
+                # Base Logic - CALCULATIONS
+                df['SMA_20'] = df['Close'].rolling(window=20).mean()
+                
+                if "SMA (50)" in active_inds:
+                    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+                
+                if "SMA (200)" in active_inds:
+                    df['SMA_200'] = df['Close'].rolling(window=200).mean()
+                
+                if "Bollinger Bands" in active_inds:
+                    df['BB_Upper'] = df['Close'].rolling(window=20).mean() + (df['Close'].rolling(window=20).std() * 2)
+                    df['BB_Lower'] = df['Close'].rolling(window=20).mean() - (df['Close'].rolling(window=20).std() * 2)
+                
+                if "RSI (14)" in active_inds:
+                    df['RSI'] = 100 - (100 / (1 + df['Close'].diff().apply(lambda x: x if x > 0 else 0).rolling(14).mean() / df['Close'].diff().apply(lambda x: abs(x) if x < 0 else 0).rolling(14).mean()))
+                
+                if "MACD" in active_inds:
+                    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+                    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+                    df['MACD'] = exp1 - exp2
+                    df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+                
+                # --- CARD 1: CHART ---
+                st.markdown('<div class="card-container">', unsafe_allow_html=True)
+                st.markdown(f'<div class="card-header">📉 Market Overview: {ticker} ({selected_tf})</div>', unsafe_allow_html=True)
+                
+                # Setup Subplots (Price on Top, RSI/MACD on Bottom)
+                # Determine chart structure based on indicators
+                row_specs = [0.7] # Main chart
+                subplot_titles = ["Price Action"]
+                
+                has_rsi = "RSI (14)" in active_inds
+                has_macd = "MACD" in active_inds
+                
+                rows = 1
+                if has_rsi: 
+                    rows += 1
+                    row_specs.append(0.2)
+                    subplot_titles.append("RSI")
+                if has_macd:
+                    rows += 1
+                    row_specs.append(0.2)
+                    subplot_titles.append("MACD")
+                
+                # Normalize row heights logic is a bit manual in plotly make_subplots
+                # Simplifying: Fixed 2 rows if any oscillator, else 1
+                # Actually, make_subplots supports auto sizing but let's be explicit
+                
+                if rows == 1:
+                    fig = make_subplots(rows=1, cols=1, shared_xaxes=True)
+                elif rows == 2:
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+                else: # 3 rows (Price, RSI, MACD)
+                    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.05)
+
+
+                # 1. Candlestick (Row 1)
+                fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="OHLC"), row=1, col=1)
+                
+                # 2. Overlays (Row 1)
+                if "SMA (20)" in active_inds:
+                     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], mode='lines', name='SMA (20)', line=dict(color='orange', width=1)), row=1, col=1)
+                if "SMA (50)" in active_inds:
+                     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], mode='lines', name='SMA (50)', line=dict(color='blue', width=1)), row=1, col=1)
+                if "SMA (200)" in active_inds:
+                     fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'], mode='lines', name='SMA (200)', line=dict(color='white', width=2)), row=1, col=1)
+                if "Bollinger Bands" in active_inds:
+                     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'], mode='lines', name='BB Upper', line=dict(color='gray', width=1, dash='dot')), row=1, col=1)
+                     fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'], mode='lines', name='BB Lower', line=dict(color='gray', width=1, dash='dot'), fill='tonexty'), row=1, col=1)
+
+                # 3. Oscillators
+                current_row = 2
+                if has_rsi:
+                    fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], mode='lines', name='RSI (14)', line=dict(color='#66fcf1', width=1)), row=current_row, col=1)
+                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=current_row, col=1)
+                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=current_row, col=1)
+                    current_row += 1
+                
+                if has_macd:
+                    fig.add_trace(go.Bar(x=df.index, y=df['MACD']-df['Signal_Line'], name='MACD Hist'), row=current_row, col=1)
+                    fig.add_trace(go.Scatter(x=df.index, y=df['MACD'], name='MACD Line', line=dict(color='#66fcf1')), row=current_row, col=1)
+                    fig.add_trace(go.Scatter(x=df.index, y=df['Signal_Line'], name='Signal', line=dict(color='orange')), row=current_row, col=1)
+
+                # Check if intraday to fix gaps
+                if selected_tf in ["5m", "15m", "30m", "1h", "4h"]:
+                    for r in range(1, rows + 1):
+                        fig.update_xaxes(
+                            type='category', 
+                            nticks=10,
+                            tickmode='auto',
+                            showticklabels=False if r < rows else True,
+                            row=r, col=1
+                        )
+                else:
+                     for r in range(1, rows + 1):
+                        fig.update_xaxes(showticklabels=False if r < rows else True, row=r, col=1)
+                
+                # Initialize AI Annotations if available
+                if 'ai_analysis_json' in st.session_state and st.session_state.ai_analysis_json:
+                     try:
+                         data = st.session_state.ai_analysis_json
+                         # Plot Support Levels
+                         for level in data.get('support_levels', []):
+                             fig.add_hline(y=level, line_dash="dot", line_color="#00cc96", annotation_text=f"Sup {level}", annotation_position="bottom right", row=1, col=1)
+                         # Plot Resistance Levels
+                         for level in data.get('resistance_levels', []):
+                             fig.add_hline(y=level, line_dash="dot", line_color="#ef553b", annotation_text=f"Res {level}", annotation_position="top right", row=1, col=1)
+                     except:
+                         pass
+
+                fig.update_layout(
+                    template="plotly_dark", 
+                    height=500 + (rows - 1) * 150, 
+                    margin=dict(l=0,r=0,t=0,b=0), 
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    xaxis_rangeslider_visible=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True) # End Card
+
+                # --- CARD: MULTI-TIMEFRAME ANALYSIS ---
+                st.markdown('<div class="card-container">', unsafe_allow_html=True)
+                st.markdown('<div class="card-header">🕒 Multi-Timeframe Analysis</div>', unsafe_allow_html=True)
+                
+                mtf_cols = st.columns(3)
+                # Define 3 key timeframes
+                mtf_tfs = ["15m", "1h", "1d"]
+                
+                for i, tf in enumerate(mtf_tfs):
+                     with mtf_cols[i]:
+                         st.markdown(f"#### {tf.upper()}")
+                         # Quick fetch for sparkline/trend
+                         try:
+                            # Reuse existing connection if possible, or fetch new
+                            if tf == "15m": d_start = now - datetime.timedelta(days=5)
+                            elif tf == "1h": d_start = now - datetime.timedelta(days=20)
+                            else: d_start = now - datetime.timedelta(days=365)
+                            
+                            df_mtf = DataLoader.get_data(ticker, str(d_start.date()), str(now.date() + datetime.timedelta(days=1)), interval=tf)
+                            if not df_mtf.empty:
+                                mtf_close = df_mtf['Close'].iloc[-1]
+                                mtf_sma20 = df_mtf['Close'].rolling(20).mean().iloc[-1]
+                                mtf_trend = "BULLISH" if mtf_close > mtf_sma20 else "BEARISH"
+                                mtf_color = "green" if mtf_trend == "BULLISH" else "red"
+                                
+                                st.markdown(f"**Trend:** <span style='color:{mtf_color}'>{mtf_trend}</span>", unsafe_allow_html=True)
+                                
+                                # Mini Sparkline
+                                st.line_chart(df_mtf['Close'].tail(30), height=100)
+                            else:
+                                st.write("No Data")
+                         except:
+                             st.write("N/A")
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                # --- CALCULATE SENTIMENT VARIABLES ---
+                last_close = df['Close'].iloc[-1]
+                last_sma = df['SMA_20'].iloc[-1] if not pd.isna(df['SMA_20'].iloc[-1]) else last_close
+                
+                if has_rsi:
+                    last_rsi = df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50
+                else:
+                    last_rsi = 50
+                
+                sentiment_score = 0
+                if last_close > last_sma: sentiment_score += 0.5
+                else: sentiment_score -= 0.5
+                
+                if len(df) > 5:
+                    change_last_5 = (df['Close'].iloc[-1] - df['Close'].iloc[-5]) / df['Close'].iloc[-5]
+                    if change_last_5 > 0: sentiment_score += 0.5
+                    else: sentiment_score -= 0.5
+                
+                if sentiment_score >= 0.5:
+                    sent_text = "BULLISH 🐂"
+                    sent_color = "#00cc96"
+                    bar_val = 0.85
+                elif sentiment_score <= -0.5:
+                    sent_text = "BEARISH 🐻"
+                    sent_color = "#ef553b"
+                    bar_val = 0.15
+                else:
+                    sent_text = "NEUTRAL ⚖️"
+                    sent_color = "#b8b8b8"
+                    bar_val = 0.5
+
+                # --- CARD 2: SENTIMENT ---
+                st.markdown('<div class="card-container">', unsafe_allow_html=True)
+                st.markdown('<div class="card-header">🌡️ Technical Sentiment</div>', unsafe_allow_html=True)
+                
+                c_s1, c_s2 = st.columns([1, 3])
+                with c_s1:
+                     st.markdown(f"<div style='text-align:center; font-size: 2rem; font-weight:bold; color:{sent_color}; margin-top: 10px;'>{sent_text}</div>", unsafe_allow_html=True)
+                with c_s2:
+                     st.progress(bar_val)
+                     st.caption(f"Based on Trend (SMA20) & Momentum (RSI: {last_rsi:.1f})")
+                
+                st.markdown('</div>', unsafe_allow_html=True) # End Card
+
+                # --- CARD 3: AI ANALYSIS (GitHub Models) ---
+                if st.session_state.run_ai_analysis:
+                     with st.spinner("🤖 Communicating with GitHub Models (Copilot)..."):
+                         if not st.session_state.github_token:
+                             st.error("Please configure your GitHub Token in 'Settings' first.")
+                         else:
+                             try:
+                                 # Configure OpenAI Client for GitHub Models
+                                 # Endpoint: https://models.inference.ai.azure.com
+                                 client = OpenAI(
+                                     base_url="https://models.inference.ai.azure.com",
+                                     api_key=st.session_state.github_token,
+                                 )
+                                 
+                                 # Prepare Context
+                                 recent_data = df.tail(15).to_string() # Increased context
+                                 
+                                 # Construct Header with Indicators
+                                 ind_summary = f"Indicators Active: {', '.join(active_inds)}\n"
+                                 if "SMA (50)" in active_inds: ind_summary += f"SMA(50): {df['SMA_50'].iloc[-1]:.2f}\n"
+                                 if "SMA (200)" in active_inds: ind_summary += f"SMA(200): {df['SMA_200'].iloc[-1]:.2f}\n"
+                                 if "RSI (14)" in active_inds: ind_summary += f"RSI(14): {df['RSI'].iloc[-1]:.2f}\n"
+                                 if "MACD" in active_inds: ind_summary += f"MACD: {df['MACD'].iloc[-1]:.2f}\n"
+
+                                 prompt_content = f"""
+                                 You are an expert financial trading analyst. Analyze the following market data for {ticker} on a {selected_tf} timeframe.
+                                 
+                                 Technical Context:
+                                 - Current Price: {last_close:.2f}
+                                 - SMA(20): {last_sma:.2f}
+                                 - Technical Sentiment: {sent_text}
+                                 {ind_summary}
+                                 
+                                 Recent OHLCV Data:
+                                 {recent_data}
+                                 
+                                 Task:
+                                 Analyze the market and provide a JSON response.
+                                 
+                                 Required JSON Structure:
+                                 {{
+                                    "analysis_summary": "Concise market analysis (max 150 words). Use markdown.",
+                                    "trend": "Bullish/Bearish/Neutral",
+                                    "support_levels": [price_float_1, price_float_2],
+                                    "resistance_levels": [price_float_1, price_float_2],
+                                    "key_signal": "BUY / SELL / WAIT"
+                                 }}
+                                 
+                                 Ensure the price levels are derived from the recent data provided.
+                                 """
+                                 
+                                 response = client.chat.completions.create(
+                                     messages=[
+                                         {"role": "system", "content": "You are a helpful and professional financial analyst that outputs strict JSON."},
+                                         {"role": "user", "content": prompt_content}
+                                     ],
+                                     model="gpt-4o", # Using GPT-4o via GitHub Models
+                                     temperature=0.5,
+                                     response_format={ "type": "json_object" } # Request JSON mode if supported, otherwise prompt handles it
+                                 )
+                                 
+                                 content = response.choices[0].message.content
+                                 
+                                 # Parse JSON
+                                 try:
+                                     data = json.loads(content)
+                                     st.session_state.ai_analysis_json = data
+                                     st.session_state.ai_analysis_text = data.get("analysis_summary", "No analysis provided.")
+                                 except Exception as e:
+                                     # Fallback if JSON fails
+                                     st.session_state.ai_analysis_text = content
+                                     st.session_state.ai_analysis_json = None
+                                     st.warning(f"Failed to parse AI JSON: {e}")
+
+                                 # Force Rerun to update chart annotations
+                                 st.rerun()
+                                 
+                             except Exception as e:
+                                 st.error(f"GitHub Inference API Error: {e}")
+                
+                 # Display Analysis (Analysis Text)
+                if st.session_state.ai_analysis_text:
+                    st.markdown('<div class="card-container">', unsafe_allow_html=True)
+                    st.markdown('<div class="card-header">🧠 GitHub Copilot AI Analysis</div>', unsafe_allow_html=True)
+                    
+                    # Display Signal Badge
+                    if st.session_state.ai_analysis_json:
+                        sig = st.session_state.ai_analysis_json.get("key_signal", "WAIT")
+                        color = "#b8b8b8"
+                        if "BUY" in sig.upper(): color = "#00cc96"
+                        elif "SELL" in sig.upper(): color = "#ef553b"
+                        st.markdown(f"<span style='background-color:{color}; padding:5px 10px; border-radius:5px; font-weight:bold; color:black;'>SIGNAL: {sig}</span>", unsafe_allow_html=True)
+                        st.markdown("<br>", unsafe_allow_html=True)
+
+                    st.markdown(st.session_state.ai_analysis_text)
+                    
+                    # Display Levels Text
+                    if st.session_state.ai_analysis_json:
+                        s_levels = st.session_state.ai_analysis_json.get("support_levels", [])
+                        r_levels = st.session_state.ai_analysis_json.get("resistance_levels", [])
+                        st.caption(f"**Supports:** {s_levels} | **Resistances:** {r_levels}")
+
+                    st.markdown('</div>', unsafe_allow_html=True)
+
+            else:
+                st.warning(f"No data available for {ticker} on {selected_tf} timeframe.")
+
+        except Exception as e:
+            st.error(f"Error fetching chart data: {e}")
+
+    # --- CARD 4: NEWS ---
+    st.markdown('<div class="card-container">', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">📰 Global News Intelligence</div>', unsafe_allow_html=True)
+    
+    with st.spinner("Analyzing global news wires..."):
+        try:
+            t_obj = yf.Ticker(ticker)
+            news_list = t_obj.news
+            
+            if news_list:
+                # Fetch more news (up to 10)
+                for item in news_list[:10]: 
+                    # Support new YF news structure (v0.2+)
+                    if 'content' in item:
+                        c = item['content']
+                        title = c.get('title', 'No Title')
+                        link = c.get('clickThroughUrl', {}).get('url', '#')
+                        publisher = c.get('provider', {}).get('displayName', 'Unknown')
+                    else:
+                        title = item.get('title', 'No Title')
+                        link = item.get('link', '#')
+                        publisher = item.get('publisher', 'Unknown')
+                    
+                    blob = TextBlob(title)
+                    polarity = blob.sentiment.polarity
+                    
+                    if polarity > 0.05:
+                        impact = "POSITIVE"
+                        imp_color = "#00cc96"
+                    elif polarity < -0.05:
+                        impact = "NEGATIVE"
+                        imp_color = "#ef553b"
+                    else:
+                        impact = "NEUTRAL"
+                        imp_color = "#b8b8b8"
+                        
+                    with st.container():
+                        st.markdown(
+                            f'''
+                            <div style="background-color: #262730; padding: 15px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid {imp_color}; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
+                                <div style="font-size: 1.1em; font-weight: bold;"><a href="{link}" target="_blank" style="text-decoration: none; color: white;">{title}</a></div>
+                                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.85em; color: #ccc;">
+                                    <span>{publisher}</span>
+                                    <span style="color: {imp_color}; font-weight: bold; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px;">{impact}</span>
+                                </div>
+                            </div>
+                            ''', 
+                            unsafe_allow_html=True
+                        )
+            else:
+                st.info("No recent news found for this asset.")
+                
+        except Exception as e:
+            st.warning(f"Could not load news: {e}")
+            
+    st.markdown('</div>', unsafe_allow_html=True) # End Card
+
+    st.markdown("---")
+
 
 # --- VIEW: STRATEGY LAB ---
 elif nav == "Strategy Lab":
@@ -724,6 +1128,16 @@ elif nav == "Strategy Lab":
                     <h3>Ready to Initialize Simulation</h3>
                  </div>
                  """, unsafe_allow_html=True)
+
+# --- SETTINGS VIEW ---
+elif nav == "Settings":
+    st.markdown("# ⚙️ Settings")
+    st.markdown("### 🔑 API Keys")
+    
+    gh_token = st.text_input("GitHub Token (for AI Models)", type="password", value=st.session_state.github_token, help="Enter a GitHub Personal Access Token (PAT) to access GitHub Models.")
+    if st.button("Save Token"):
+        st.session_state.github_token = gh_token
+        st.success("GitHub Token saved!")
 
 # --- VIEW: STRATEGY BUILDER ---
 elif nav == "Strategy Builder":
