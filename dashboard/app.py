@@ -737,7 +737,7 @@ if nav == "AI Trading Suite":
                                         </div>
                                     </div>
                                     """
-                                    st.markdown(textwrap.dedent(html_content), unsafe_allow_html=True)
+                                    st.markdown(textwrap.dedent(html_content).replace("\n", ""), unsafe_allow_html=True)
                                     
                         st.markdown('</div>', unsafe_allow_html=True)
 
