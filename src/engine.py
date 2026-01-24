@@ -314,7 +314,43 @@ class BacktestEngine:
         if equity_df['Returns'].std() > 0:
             sharpe_ratio = (equity_df['Returns'].mean() / equity_df['Returns'].std()) * (252 ** 0.5)
         else:
-            sharpe_ratio = 0
+            sharpe_ratio = 0.0
+
+        # Detailed Trade Stats
+        trades_df = pd.DataFrame(self.trade_log)
+        win_rate = 0.0
+        profit_factor = 0.0
+        avg_trade = 0.0
+        total_trades_count = 0
+        total_wins = 0
+        total_losses = 0
+
+        if not trades_df.empty and 'Type' in trades_df.columns:
+            # Filter solely for realized PnL explicitly
+            # In this engine, SELL/Sl/TP entries have 'Value' as PnL? 
+            # Looking at code: 
+            # SELL: 'Value': pnl
+            # STOP_LOSS: 'Value': pnl
+            # TAKE_PROFIT: 'Value': pnl
+            # BUY: 'Value': cost_basis (positive)
+            
+            # So we sum 'Value' where Type != 'BUY'
+            exits = trades_df[trades_df['Type'].isin(['SELL', 'STOP_LOSS', 'TAKE_PROFIT'])]
+            total_trades_count = len(exits)
+            
+            if not exits.empty:
+                wins = exits[exits['Value'] > 0]
+                losses = exits[exits['Value'] <= 0]
+                
+                total_wins = len(wins)
+                total_losses = len(losses)
+                
+                win_rate = (total_wins / total_trades_count) * 100
+                gross_profit = wins['Value'].sum()
+                gross_loss = abs(losses['Value'].sum())
+                
+                profit_factor = gross_profit / gross_loss if gross_loss > 0 else 99.99
+                avg_trade = exits['Value'].mean()
 
         return {
             'initial_capital': self.initial_capital,
@@ -322,6 +358,16 @@ class BacktestEngine:
             'return_pct': ((self.capital - self.initial_capital) / self.initial_capital) * 100,
             'max_drawdown': max_drawdown,
             'sharpe_ratio': sharpe_ratio,
-            'trades': pd.DataFrame(self.trade_log),
-            'equity_curve': equity_df
+            'trades': trades_df,
+            'equity_curve': equity_df,
+            'metrics': {
+                'win_rate': win_rate,
+                'profit_factor': profit_factor,
+                'avg_trade': avg_trade,
+                'total_trades': total_trades_count,
+                'sharpe_ratio': sharpe_ratio,
+                'max_drawdown': max_drawdown,
+                'total_wins': total_wins,
+                'total_losses': total_losses
+            }
         }
