@@ -997,7 +997,17 @@ elif nav == "Strategy Lab":
                     for idx, item in enumerate(top_3):
                         st.markdown(f"**Rank #{idx+1}**")
                         c1, c2, c3, c4 = st.columns(4)
-                        c1.markdown(f"Params: `{item['params']}`")
+                        
+                        # Format Params
+                        key_map = {
+                            'short': 'Short', 'long': 'Long',
+                            'rsi_p': 'RSI', 'rsi_l': 'Low', 'rsi_u': 'High', 'bb_std': 'Std',
+                            'fast': 'Fast', 'slow': 'Slow', 'signal': 'Sig'
+                        }
+                        p_parts = [f"{key_map.get(k, k)}: {v}" for k, v in item['params'].items()]
+                        p_str = ", ".join(p_parts)
+                        
+                        c1.markdown(f"{p_str}")
                         c2.metric("Return", f"{item['metric']:.2f}%")
                         c3.metric("Sharpe", f"{item['sharpe']:.2f}")
                         c4.metric("Drawdown", f"{item['drawdown']:.2f}%")
