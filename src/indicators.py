@@ -40,5 +40,3 @@ class Indicators:
         sig = macd.ewm(span=signal, adjust=False).mean()
         hist = macd - sig
         return macd, sig, hist
-        lower = sma - (std * std_dev)
-        return upper, lower

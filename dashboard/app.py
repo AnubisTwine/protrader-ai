@@ -169,6 +169,14 @@ if 'builder_entry_rules' not in st.session_state: st.session_state.builder_entry
 if 'builder_exit_rules' not in st.session_state: st.session_state.builder_exit_rules = []
 if 'navigation' not in st.session_state: st.session_state.navigation = "AI Trading Suite"
 if 'github_token' not in st.session_state: st.session_state.github_token = ""
+if 'debug_logs' not in st.session_state: st.session_state.debug_logs = []
+
+def log_to_file(msg):
+    try:
+        with open("backtest_log.txt", "a") as f:
+            f.write(f"{datetime.datetime.now()} : {msg}\n")
+    except:
+        pass
 
 # --- SIDEBAR NAV ---
 st.sidebar.image("https://img.icons8.com/nolan/96/bullish.png", width=60)
@@ -205,7 +213,7 @@ def get_kpi_card(title, value, is_positive=True, prefix="", suffix=""):
     </div>
     """
 
-def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy_type, params, multiplier, leverage, fixed_size, pyramiding_limit, stop_loss_pct=0.0, take_profit_pct=0.0):
+def run_backtest_logic(ticker, start_date, end_date, interval, initial_capital, strategy_type, params, multiplier, leverage, fixed_size, pyramiding_limit, stop_loss_pct=0.0, take_profit_pct=0.0):
     try:
         # Load Data
         fetch_start = start_date
@@ -219,10 +227,11 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
              min_date = datetime.date.today() - datetime.timedelta(days=limit)
              if fetch_start < min_date: fetch_start = min_date
 
+        print(f"DEBUG: Backtest fetch {ticker} {fetch_start} to {end_date} on {interval}")
         data = DataLoader.get_data(ticker, str(fetch_start), str(end_date), interval=interval)
         
         if data.empty:
-            return None, "No Data Found"
+            return None, f"No Data Found for {ticker} spanning {fetch_start} to {end_date}"
 
         # Init Strategy
         if strategy_type == "SMA Crossover":
@@ -240,15 +249,52 @@ def run_backtest_logic(start_date, end_date, interval, initial_capital, strategy
                  return None, f"Unknown Strategy: {strategy_type}"
         
         # Run Engine
+        log_msg = f"Running {strategy_type} on {len(data)} bars. Size: {fixed_size}. Initial Cap: {initial_capital}. Mult: {multiplier}. Lev: {leverage}"
+        # print(log_msg) 
+        # st.session_state.debug_logs.append(log_msg)
+        log_to_file(log_msg)
+        
+        # Pre-flight Check
+        last_price = data['Close'].iloc[-1]
+        cost_one = last_price * multiplier / leverage
+        if cost_one > initial_capital and fixed_size == 0:
+             # Only Warn if NOT using fixed size (since fixed size bypasses this now)
+             err_msg = f"WARNING: 1 Unit Cost ({cost_one:.2f}) > Capital ({initial_capital}). Auto-sizing may fail."
+             # print(err_msg)
+             # st.session_state.debug_logs.append(err_msg)
+             log_to_file(err_msg)
+
         engine = BacktestEngine(initial_capital=initial_capital)
         results = engine.run(strategy, multiplier=multiplier, leverage=leverage, fixed_size=fixed_size, pyramiding_limit=pyramiding_limit, stop_loss_pct=stop_loss_pct, take_profit_pct=take_profit_pct)
         
+        # Debug Results
+        trades_count = results['metrics']['total_trades']
+        if trades_count == 0:
+             signals = strategy.generate_signals()
+             sig_sum = signals['signal'].abs().sum() if 'signal' in signals.columns else 0
+             
+             # Calculate Affordability
+             can_afford = (initial_capital * leverage) / last_price if last_price > 0 else 0
+             
+             msg = f"WARNING: 0 Trades. Signal Count: {sig_sum}. Last Price: {last_price:.2f}. Cap w/ Lev: {initial_capital*leverage}. Can afford: {int(can_afford)} units."
+             # print(msg)
+             # st.session_state.debug_logs.append(msg)
+             log_to_file(msg)
+        else:
+             msg = f"SUCCESS: {trades_count} Trades executed."
+             # print(msg)
+             # st.session_state.debug_logs.append(msg)
+             log_to_file(msg)
+
         # Add history for visualization
         results['history'] = data
         
         return results, None
         
     except Exception as e:
+        import traceback
+        st.error(f"❌ DEBUG: Error: {e}")
+        st.code(traceback.format_exc())
         return None, str(e)
 
 
@@ -856,9 +902,9 @@ elif nav == "Strategy Lab":
                  multiplier = st.number_input("Multiplier", value=1.0 if "Gold" not in asset_class else 5.0, help="Value of 1 point movement per contract.")
 
             st.markdown("#### Risk & Management")
-            c_row2_1, c_row2_2, c_row2_3, c_row2_4 = st.columns(4)
-            with c_row2_1:
-                leverage = st.number_input("Leverage", 1.0, 100.0, 1.0, help="10x means 10% margin required.")
+            # Only 3 cols now, leverage removed
+            c_row2_2, c_row2_3, c_row2_4 = st.columns(3)
+            leverage = 1.0 # Hardcoded for Futures logic simplicity
             with c_row2_2:
                 stop_loss = st.number_input("Stop Loss %", 0.0, 20.0, 0.0, step=0.5) / 100
             with c_row2_3:
@@ -983,25 +1029,27 @@ elif nav == "Strategy Lab":
             test_timeframes = [interval]
 
         st.session_state.multi_tf_results = {} # Reset
+        st.session_state.debug_logs = [] # Reset logs
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         for i, tf in enumerate(test_timeframes):
-            status_text.text(f"Simulating {strat} on {tf} ({i+1}/{len(test_timeframes)})...")
-            
+            # status_text.text(f"Simulating {strat} on {tf} ({i+1}/{len(test_timeframes)})...")
+            # SILENCED status updates to prevent flashing
+
             # Adjust start date for lower timeframes if needed to prevent yfinance errors?
             # yfinance handles it gracefully usually, or returns empty.
             # But to save time, maybe cap history for < 15m?
             # User simply asked to test. Let's let logic handle it.
             
-            res, err = run_backtest_logic(start_date, end_date, tf, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding, stop_loss, take_profit)
+            res, err = run_backtest_logic(ticker, start_date, end_date, tf, initial_cap, strat, params, multiplier, leverage, fixed_size, pyramiding, stop_loss, take_profit)
             
             if res:
                 st.session_state.multi_tf_results[tf] = res
             else:
-                # If it fails (e.g. no data for 1h in 1990), we just skip
-                pass
+                 # Log error to file instead of warning UI
+                 log_to_file(f"FAILED {tf}: {err}")
             
             progress_bar.progress((i + 1) / len(test_timeframes))
             
@@ -1020,6 +1068,11 @@ elif nav == "Strategy Lab":
         else:
                 st.session_state.bt_results = None
                 st.error("No data found for any timeframe.")
+        
+        # Display Logs
+        with st.expander("📝 Debug Logs", expanded=True):
+            for log in st.session_state.debug_logs:
+                st.text(log)
 
     # --- DISPLAY RESULTS / MULTI-TF SELECTOR ---
     
@@ -1156,7 +1209,7 @@ elif nav == "Strategy Lab":
                 fig_comp.add_trace(go.Scatter(x=res['equity_curve'].index, y=res['equity_curve']['Equity'], name="Current Run", line=dict(width=3)))
                 
                 for r in st.session_state.saved_runs:
-                    fig_comp.add_trace(go.Scatter(x=r['equity_curve'].index, y=r['equity_curve'], name=r['name'], mode='lines', line=dict(dash='dash')))
+                    fig_comp.add_trace(go.Scatter(x=r['equity'].index, y=r['equity'], name=r['name'], mode='lines', line=dict(dash='dash')))
                     
                 fig_comp.update_layout(title="Equity Curve Comparison", template="plotly_dark", height=400)
                 st.plotly_chart(fig_comp, use_container_width=True)
